@@ -1,13 +1,20 @@
 // @ts-nocheck
 import React, { useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, StyleSheet, Dimensions, Animated, Platform, Image } from "react-native";
+import { View, Text, Pressable, StyleSheet, Dimensions, Animated, Platform, Image, Modal, TextInput, ScrollView, ActivityIndicator, Alert } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Rect } from "react-native-svg";
+
+let Audio: any = null;                 // 👈 lazy
+if (Platform.OS !== "web") {
+  // @ts-ignore
+  Audio = require("expo-av").Audio;
+}
+
 // ❌ fjernet: import translate from '@vitalets/google-translate-api';
 
-const MODEL = "gpt-4.1-mini";        // mer presis: "o4-mini" (tregere)
-const MAX_SIDE = 768;                 // 512 = raskere / 960 = mer nøyaktig
+const MODEL = "gpt-4.1-mini";        // evt "o4-mini" (tregere)
+const MAX_SIDE = 768;                 
 const JPEG_QUALITY = 0.85;
 
 const PROMPT = `
@@ -26,25 +33,8 @@ OUTPUTREGLER
 - Sortér detections synkende på confidence.
 - Returner {"detections":[]} hvis ingen sikre funn.
 
-UNIVERSELLE PRINSIPPER (generalisert, ikke domenespesifikke)
-1) Fysikalitet først: Merk bare **fysiske** objekter i scenen. Alt som kun er representert som bilde, video, refleksjon, skygge, speilning eller på en skjerm/poster ignoreres. Merk da selve bæreren (fysisk enhet), ikke innholdet.
-2) Objektprioritet: Prioriter nærliggende, tydelig avgrensede objekter foran store bakgrunner. Nær-/forgrunn > fjern-/bakgrunn når du velger topp 5.
-3) Stramhet vs. avkutt: Boksene skal følge synlig kontur med mål <3% ekstra margin. Dersom valget står mellom å **kutte** objektet eller å inkludere litt bakgrunn: velg **svakt for stor** (heller litt for stor enn litt for liten).
-4) Anti-megaboks: Én boks = én sammenhengende gjenstand. Ikke lag bokser som dekker flere separate objekter eller store scenesegmenter.
-5) Skala-robusthet: Søk i flere skalaer. Kandidater helt ned til ~3% av bildeflaten skal vurderes. Behold små objekter når de er tydelig avgrenset.
-6) Occlusion/truncation: Delvis skjulte eller avkuttede objekter kan merkes hvis identiteten er tydelig. Boks følger kun den **synlige** delen.
-7) Konsistenskontroll: Justér boks til sannsynlige kanter (edge-snap). Unngå ekstremt ulogiske aspektforhold for kjente formfaktorer. Klipp til bildekant; ingen verdier <0 eller >1.
-8) Duplikathåndtering: Slå sammen overlappende kandidater (IoU>0.60). Behold den med høyest presisjon (mest stram) og høyest confidence.
-9) Kalibrering: Senk confidence ved sterk bevegelsesuskarphet, lav kontrast, ekstrem vinkel eller tett bakgrunnsblanding. Øk moderat ved klare kanter og konsistente konturer.
-10) Navneregler: Bruk naturlig, spesifikt norsk ord fremfor superkategori. Ingen merkenavn/modeller. Små bokstaver, ingen mellomrom dersom sammensatt.
-
-VALIDERING FØR SVAR
-- Tall ∈ [0,1]? Avrunding riktig?
-- Boksene stramme (mål <3%) og ikke avkuttende? Hvis i tvil: litt for store.
-- Ingen megabokser / ett-objekt-per-boks?
-- Maks 5, sortert på confidence?
-
-Returner deretter KUN JSON i skjemaet over.
+UNIVERSELLE PRINSIPPER ...
+(… alt videre som du hadde …)
 `;
 
 const { width: SW, height: SH } = Dimensions.get("window");
@@ -71,7 +61,34 @@ export default function Screen() {
   const [barExpanded, setBarExpanded] = useState(false);
   const [predictionsWithEn, setPredictionsWithEn] = useState<any[]>([]);
 
+  // 🔵 NEW: Task modal state
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [taskWord, setTaskWord] = useState<{no:string,en:string}|null>(null);
+  const [taskTab, setTaskTab] = useState<"menu"|"write"|"speak"|"answer">("menu");
+
+  // 🔵 NEW: Exercises & evaluation state
+  const [exercises, setExercises] = useState<{write:string[], speak:string[], answer:string[]}>({write:[], speak:[], answer:[]});
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [userText, setUserText] = useState("");
+  const [rating, setRating] = useState<{score:number,reason:string}|null>(null);
+  const [genBusy, setGenBusy] = useState(false);
+  const [evalBusy, setEvalBusy] = useState(false);
+
+  // 🔵 NEW: Audio record state
+  const [recording, setRecording] = useState<Audio.Recording|null>(null);
+  const [micGranted, setMicGranted] = useState<boolean | null>(null);
+
   useEffect(() => { if (!permission?.granted) requestPermission(); }, [permission]);
+
+  const ensureMic = async () => {
+    if (!Audio) {
+      Alert.alert("Ikke støttet", "Taleopptak er ikke tilgjengelig på denne plattformen.");
+      return;
+    }
+    const { status } = await Audio.requestPermissionsAsync();
+    setMicGranted(status === "granted");
+    return status === "granted";
+  };
 
   const flash = () => {
     flashAnim.setValue(1);
@@ -134,12 +151,9 @@ export default function Screen() {
 
   // -------------------
   // Oversett labels til engelsk via OpenAI (RN-kompatibel)
-  // Beholder samme API som før, men bytter implementasjon.
-  // Med enkel cache for å unngå duplikatkall inne i samme session.
   const translationCache = useRef(new Map()).current;
   async function translateToEnglish(norsk: string) {
     if (!norsk) return norsk;
-
     const cached = translationCache.get(norsk);
     if (cached) return cached;
 
@@ -151,35 +165,23 @@ export default function Screen() {
 
     const body = {
       model: "gpt-4o-mini",
-      input: `Oversett ordet "${norsk}" til engelsk. Svar med kun ett ord (ingen tegnsetting).`,
+      input: `Oversett det norske ordet "${norsk}" til engelsk. Gi bare det korteste og mest vanlige oversettelsesordet. Ikke fantasér. Svar med ett ord.`,
       temperature: 0,
-      max_output_tokens: 32,
+      max_output_tokens: 32, // >=16
     };
-
     try {
       const rsp = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${key}`,
-        },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
         body: JSON.stringify(body),
       });
-
       if (!rsp.ok) {
-        const txt = await rsp.text();
-        console.warn("Translate failed:", rsp.status, txt);
+        console.warn("Translate failed:", rsp.status, await rsp.text());
         return norsk;
       }
-
       const json = await rsp.json();
-      // 🔧 Bruk samme robuste parser som du bruker ellers:
-      const out =
-        (typeof json.output_text === "string" && json.output_text) ||
-        getOutputText(json) ||
-        "";
-
-      const en = out.trim() || norsk;
+      const out = getOutputText(json) || (json?.output_text ?? "");
+      const en = (out || norsk).trim();
       translationCache.set(norsk, en);
       return en;
     } catch (err) {
@@ -187,7 +189,6 @@ export default function Screen() {
       return norsk;
     }
   }
-
   // -------------------
 
   // Oppdater oversettelser når boxes endres
@@ -223,19 +224,20 @@ export default function Screen() {
   const scaled = boxes.map(b => ({
     ...b,
     x1: Math.round(b.x1 * fit.sx + fit.dx),
-    y1: Math.round(b.y1 * fit.sy + fit.dy),
+    y1: Math.max(0, Math.round(b.y1 * fit.sy + fit.dy)),
     x2: Math.round(b.x2 * fit.sx + fit.dx),
     y2: Math.round(b.y2 * fit.sy + fit.dy),
   }));
 
   const barW = prog.interpolate({ inputRange: [0, 1], outputRange: [0, SW * 0.6] });
 
+  // ---------- UI ----------
   return (
     <View style={styles.root}>
       {/* fullskjerm kamera */}
       <CameraView
         ref={cameraRef}
-        style={[StyleSheet.absoluteFill, { transform: [{ scaleX: facing === "front" ? 1 : 1 }] }]} // -1 : 1 for speilvendt
+        style={[StyleSheet.absoluteFill, { transform: [{ scaleX: facing === "front" ? 1 : 1 }] }]} // speil? bytt til -1
         facing={facing}
       />
 
@@ -253,7 +255,8 @@ export default function Screen() {
           </Svg>
           {scaled.map((b, i) => (
             <View key={`t${i}`} style={[styles.tag, { left: b.x1, top: Math.max(0, b.y1 - 24) }]}>
-              <Text style={styles.tagTxt}>{b.label} {(b.conf ?? 0).toFixed(2)}</Text>
+              {/* fortsatt norsk på overlay; kan bytte til b.en hvis ønsket */}
+              <Text style={styles.tagTxt}>{b.label}</Text>
             </View>
           ))}
 
@@ -304,12 +307,207 @@ export default function Screen() {
                 <Text style={styles.predLabel}>{b.label}</Text>
                 <Text style={styles.predArrow}>→</Text>
                 <Text style={styles.predEn}>{b.en}</Text>
-                <Text style={styles.predConf}>{(b.conf ?? 0).toFixed(2)}</Text>
+
+                {/* 🟣 NEW: Task button (erstatter confidence) */}
+                <Pressable
+                  style={styles.taskBtn}
+                  onPress={async () => {
+                    setTaskWord({ no: b.label, en: b.en });
+                    setTaskTab("menu");
+                    setRating(null);
+                    setUserText("");
+                    setCurrentIndex(0);
+                    setExercises({write:[], speak:[], answer:[]});
+                    setTaskOpen(true);
+                    // pre-generate menu exercises for quick UX if you vil:
+                    setGenBusy(true);
+                    try {
+                      const ex = await generateExercisesForWord(b.label, b.en);
+                      setExercises(ex);
+                    } catch (e) {
+                      console.warn("generateExercisesForWord error", e);
+                      Alert.alert("Oops", "Klarte ikke lage oppgaver nå.");
+                    } finally {
+                      setGenBusy(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.taskBtnTxt}>Task</Text>
+                </Pressable>
               </View>
             ))}
           </View>
         </Pressable>
       )}
+
+      {/* 🟣 NEW: Fullscreen Task Modal */}
+      <Modal visible={taskOpen} animationType="slide" transparent={false}>
+        <View style={styles.modalRoot}>
+          {/* Close X */}
+          <Pressable style={styles.modalClose} onPress={() => setTaskOpen(false)}>
+            <Text style={styles.closeTxt}>✕</Text>
+          </Pressable>
+
+          {/* Header */}
+          <View style={{ paddingTop: 50, paddingHorizontal: 20, paddingBottom: 10 }}>
+            <Text style={styles.modalTitle}>What exercises do you want to do with this word?</Text>
+            {taskWord && (
+              <Text style={styles.modalSub}>
+                Norsk: <Text style={{fontWeight:"700"}}>{taskWord.no}</Text>  •  English: <Text style={{fontWeight:"700"}}>{taskWord.en}</Text>
+              </Text>
+            )}
+          </View>
+
+          {taskTab === "menu" && (
+            <View style={{ padding: 20 }}>
+              {genBusy ? (
+                <View style={{alignItems:"center", marginTop:40}}>
+                  <ActivityIndicator />
+                  <Text style={{color:"#fff", marginTop:10}}>Lager tre oppgaver per kategori…</Text>
+                </View>
+              ) : (
+                <>
+                  <BigMenuButton label="Write a Norwegian sentence" onPress={() => { setTaskTab("write"); setCurrentIndex(0); setRating(null); setUserText(""); }} />
+                  <BigMenuButton label="Speak a Norwegian sentence" onPress={async () => {
+                    const ok = await ensureMic();
+                    if (!ok) { Alert.alert("Mikrofon", "Gi tilgang til mikrofon for å bruke tale."); return; }
+                    setTaskTab("speak"); setCurrentIndex(0); setRating(null); setUserText("");
+                  }} />
+                  <BigMenuButton label="Answer a question in Norwegian" onPress={() => { setTaskTab("answer"); setCurrentIndex(0); setRating(null); setUserText(""); }} />
+                </>
+              )}
+            </View>
+          )}
+
+          {taskTab !== "menu" && (
+            <ScrollView style={{ paddingHorizontal: 20 }} contentContainerStyle={{ paddingBottom: 40 }}>
+              <Text style={styles.exerciseHeader}>
+                {taskTab === "write" ? "Write a Norwegian sentence" :
+                 taskTab === "speak" ? "Speak a Norwegian sentence" :
+                 "Answer a question in Norwegian"}
+              </Text>
+
+              {/* Oppgavetekst */}
+              <Text style={styles.exercisePrompt}>
+                {getExercise(exercises, taskTab, currentIndex) ?? "—"}
+              </Text>
+
+              {/* INPUT: tekst eller tale */}
+              {taskTab === "speak" ? (
+                <View style={{ marginTop: 20, alignItems: "center" }}>
+                  <Pressable
+                    style={[styles.recordBtn, recording && {backgroundColor:"#400"}]}
+                    onPress={async () => {
+                      if (recording) {
+                        try {
+                          await recording.stopAndUnloadAsync();
+                        } catch {}
+                        const rec = recording;
+                        setRecording(null);
+                        const uri = rec.getURI();
+                        if (!uri) { Alert.alert("Opptak", "Fant ikke lydfil."); return; }
+                        // Transcribe
+                        setEvalBusy(true);
+                        try {
+                          const transcript = await transcribeAudioWithOpenAI(uri);
+                          setUserText(transcript || "");
+                        } catch (e) {
+                          console.warn("transcribe error", e);
+                          Alert.alert("Transkripsjon feilet", "Prøv igjen.");
+                        } finally {
+                          setEvalBusy(false);
+                        }
+                      } else {
+                        try {
+                          await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+                          const rec = new Audio.Recording();
+                          await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+                          await rec.startAsync();
+                          setRecording(rec);
+                        } catch (e) {
+                          console.warn("record start error", e);
+                          Alert.alert("Opptak feilet", "Kunne ikke starte opptak.");
+                        }
+                      }
+                    }}
+                  >
+                    <Text style={styles.recordBtnTxt}>{recording ? "Stop & Transcribe" : "Start Recording"}</Text>
+                  </Pressable>
+
+                  <Text style={{ color:"#ccc", marginTop: 12, textAlign:"center" }}>
+                    {userText ? `Transkripsjon: “${userText}”` : (recording ? "Opptak pågår…" : "Ingen transkripsjon ennå")}
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  <TextInput
+                    value={userText}
+                    onChangeText={setUserText}
+                    placeholder="Skriv svaret ditt på norsk…"
+                    placeholderTextColor="#888"
+                    style={styles.input}
+                    multiline
+                  />
+                </>
+              )}
+
+              {/* Vurdering */}
+              <View style={{ marginTop: 16, flexDirection:"row", gap:12 }}>
+                <Pressable
+                  style={styles.checkBtn}
+                  onPress={async () => {
+                    if (!taskWord) return;
+                    const prompt = getExercise(exercises, taskTab, currentIndex) ?? "";
+                    const answer = userText.trim();
+                    if (!answer) { Alert.alert("Svar", "Skriv eller snakk et svar først."); return; }
+                    setEvalBusy(true);
+                    try {
+                      const res = await rateAnswerWithOpenAI(taskWord.no, prompt, answer);
+                      setRating(res);
+                    } catch (e) {
+                      console.warn("rate error", e);
+                      Alert.alert("Vurdering feilet", "Prøv igjen.");
+                    } finally {
+                      setEvalBusy(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.checkBtnTxt}>Check</Text>
+                </Pressable>
+
+                <Pressable
+                  style={styles.nextBtn}
+                  onPress={() => {
+                    setCurrentIndex(i => Math.min(2, i + 1));
+                    setUserText("");
+                    setRating(null);
+                  }}
+                >
+                  <Text style={styles.nextBtnTxt}>Next</Text>
+                </Pressable>
+
+                <Pressable style={styles.backBtn} onPress={() => setTaskTab("menu")}>
+                  <Text style={styles.backBtnTxt}>Back</Text>
+                </Pressable>
+              </View>
+
+              {evalBusy && (
+                <View style={{ marginTop: 16, flexDirection:"row", alignItems:"center", gap:10 }}>
+                  <ActivityIndicator />
+                  <Text style={{ color:"#fff" }}>Vurderer svaret…</Text>
+                </View>
+              )}
+
+              {rating && (
+                <View style={styles.ratingCard}>
+                  <Text style={styles.ratingScore}>Score: {rating.score}/6</Text>
+                  <Text style={styles.ratingReason}>{rating.reason}</Text>
+                </View>
+              )}
+            </ScrollView>
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -346,17 +544,13 @@ async function callOpenAI(b64, model, signal) {
 
   const body = {
     model,
-    temperature: 0.5, // mer deterministisk
+    temperature: 0.5,
     max_output_tokens: 300,
     input: [{
       role: "user",
       content: [
         { type: "input_text", text: PROMPT },
-        { 
-          type: "input_image",
-          image_url: `data:image/jpeg;base64,${b64}`,
-          detail: "high" 
-        },
+        { type: "input_image", image_url: `data:image/jpeg;base64,${b64}`, detail: "high" },
       ],
     }],
   };
@@ -413,6 +607,141 @@ function fitContainScale({ srcW, srcH, dstW, dstH }) {
   const s = Math.min(dstW/srcW, dstH/srcH);
   const w = srcW * s, h = srcH * s;
   return { sx: s, sy: s, dx: (dstW - w)/2, dy: (dstH - h)/2 };
+}
+
+/* ---------- NEW: Exercise generation & rating ---------- */
+
+async function generateExercisesForWord(norsk: string, english: string) {
+  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
+
+  const sys = `
+Du er en norsk språklærer. Lag korte, konkrete elevoppgaver på A1-A2-nivå (enkelt, naturlig språk). Vær kreativ med oppgavene og inkluder varierte oppgavetyper.
+Returner KUN gyldig JSON med:
+{"write":["...","...","..."],"speak":["...","...","..."],"answer":["...","...","..."]}
+
+- write: be eleven skrive én norsk setning som bruker ordet naturlig.
+- speak: be eleven SI én norsk setning som bruker ordet naturlig (for taleopptak).
+- answer: still ett kort spørsmål på norsk som inkluderer ordet.
+Oppgavene må være varierte, unike og relevante for ordet.
+  `.trim();
+
+  const user = `
+Ord (norsk): "${norsk}"
+Engelsk: "${english}"
+Lag 3 oppgaver per kategori.
+  `.trim();
+
+  const body = {
+    model: "gpt-4o-mini",
+    temperature: 0.4,
+    max_output_tokens: 300,
+    input: [
+      { role: "system", content: [{ type:"input_text", text: sys }] },
+      { role: "user", content: [{ type:"input_text", text: user }] }
+    ],
+  };
+
+  const rsp = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+    body: JSON.stringify(body),
+  });
+  if (!rsp.ok) throw new Error(await rsp.text());
+  const json = await rsp.json();
+  const out = getOutputText(json) || "{}";
+  let data = {};
+  try { data = JSON.parse(out); } catch { data = {}; }
+  return {
+    write: Array.isArray(data.write) ? data.write.slice(0,3) : [],
+    speak: Array.isArray(data.speak) ? data.speak.slice(0,3) : [],
+    answer: Array.isArray(data.answer) ? data.answer.slice(0,3) : [],
+  };
+}
+
+async function rateAnswerWithOpenAI(norskOrd: string, prompt: string, userAnswer: string) {
+  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
+
+  const sys = `
+Du er en streng, men rettferdig norsklærer. Vurder elevsvaret KUN basert på oppgaven. Du er ikke streng på teori, KUN språkferdigheter.
+Gi poeng 1–6 (heltall) og en kort begrunnelse på norsk (maks 2 setninger).
+Returner KUN JSON: {"score":8,"reason":"..."}
+  `.trim();
+
+  const user = `
+Oppgave: ${prompt}
+Ord som skal brukes (norsk): ${norskOrd}
+Elevsvar: ${userAnswer}
+  `.trim();
+
+  const body = {
+    model: "gpt-4o-mini",
+    temperature: 0,
+    max_output_tokens: 120,
+    input: [
+      { role: "system", content: [{ type:"input_text", text: sys }] },
+      { role: "user", content: [{ type:"input_text", text: user }] }
+    ],
+  };
+
+  const rsp = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
+    body: JSON.stringify(body),
+  });
+  if (!rsp.ok) throw new Error(await rsp.text());
+  const json = await rsp.json();
+  const out = getOutputText(json) || "{}";
+  let d = { score: 0, reason: "Kunne ikke tolke svar." };
+  try { d = JSON.parse(out); } catch {}
+  return { score: Math.max(1, Math.min(6, d.score|0)), reason: String(d.reason || "") };
+}
+
+/* ---------- NEW: Speech-to-text (Whisper) ---------- */
+
+async function transcribeAudioWithOpenAI(fileUri: string) {
+  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
+
+  const form = new FormData();
+  // iOS/Android trenger type & name
+  form.append("file", {
+    uri: fileUri,
+    type: "audio/m4a",
+    name: "speech.m4a",
+  } as any);
+  form.append("model", "whisper-1"); // stabil STT
+  form.append("language", "no");     // norsk
+
+  const rsp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${key}` },
+    body: form,
+  });
+  if (!rsp.ok) throw new Error(await rsp.text());
+  const json = await rsp.json();
+  // Whisper returnerer .text
+  return (json.text || "").trim();
+}
+
+/* ---------- small UI helpers ---------- */
+
+function getExercise(ex: {write:string[], speak:string[], answer:string[]}, tab: string, idx: number) {
+  const arr = tab === "write" ? ex.write : tab === "speak" ? ex.speak : ex.answer;
+  return arr[idx] || null;
+}
+
+function Center({ children }) {
+  return <View style={{ flex:1, backgroundColor:"#000", alignItems:"center", justifyContent:"center" }}>{children}</View>;
+}
+
+function BigMenuButton({ label, onPress }) {
+  return (
+    <Pressable style={styles.bigBtn} onPress={onPress}>
+      <Text style={styles.bigBtnTxt}>{label}</Text>
+    </Pressable>
+  );
 }
 
 /* ---------- styles ---------- */
@@ -475,13 +804,43 @@ const styles = StyleSheet.create({
   predBarCollapsed: { bottom: 0, height: "10%" },
   predBarExpanded: { bottom: 0, height: "80%" },
   predList: { flex: 1, justifyContent: "flex-start" },
-  predRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  predRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
   predLabel: { color: "#fff", fontWeight: "700", fontSize: 16, flex: 2 },
   predArrow: { color: "#fff", fontSize: 16, marginHorizontal: 8 },
   predEn: { color: "#aaf", fontWeight: "700", fontSize: 16, flex: 2 },
-  predConf: { color: "#ff0", fontWeight: "700", fontSize: 14, marginLeft: 12 },
-});
 
-function Center({ children }) {
-  return <View style={{ flex:1, backgroundColor:"#000", alignItems:"center", justifyContent:"center" }}>{children}</View>;
-}
+  // 🟣 NEW:
+  taskBtn: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: "#333", borderRadius: 8, marginLeft: 8 },
+  taskBtnTxt: { color: "#fff", fontWeight: "700" },
+
+  // Modal
+  modalRoot: { flex:1, backgroundColor:"#000" },
+  modalClose: { position:"absolute", top: Platform.OS === "ios" ? 50 : 24, left: 16, zIndex: 20, width:36, height:36, alignItems:"center", justifyContent:"center", backgroundColor:"rgba(255,255,255,0.1)", borderRadius:18 },
+  modalTitle: { color:"#fff", fontWeight:"800", fontSize:18 },
+  modalSub: { color:"#aaa", marginTop: 6 },
+
+  bigBtn: { backgroundColor:"#1f1f1f", paddingVertical:18, paddingHorizontal:16, borderRadius:12, marginBottom:14, borderWidth:1, borderColor:"#333" },
+  bigBtnTxt: { color:"#fff", fontWeight:"700", fontSize:16 },
+
+  exerciseHeader: { color:"#fff", fontWeight:"800", fontSize:17, marginTop: 18, marginBottom: 10 },
+  exercisePrompt: { color:"#ddd", fontSize:16, lineHeight:22 },
+
+  input: { marginTop: 16, backgroundColor:"#161616", borderRadius:10, padding:12, color:"#fff", minHeight:80, borderWidth:1, borderColor:"#333" },
+
+  checkBtn: { backgroundColor:"#2b6", paddingHorizontal:16, paddingVertical:10, borderRadius:10 },
+  checkBtnTxt: { color:"#fff", fontWeight:"800" },
+
+  nextBtn: { backgroundColor:"#555", paddingHorizontal:16, paddingVertical:10, borderRadius:10 },
+  nextBtnTxt: { color:"#fff", fontWeight:"800" },
+
+  backBtn: { backgroundColor:"#333", paddingHorizontal:16, paddingVertical:10, borderRadius:10 },
+  backBtnTxt: { color:"#fff", fontWeight:"800" },
+
+  ratingCard: { marginTop: 16, backgroundColor:"#121212", borderRadius:12, padding:12, borderWidth:1, borderColor:"#2a2a2a" },
+  ratingScore: { color:"#ff9", fontWeight:"800", marginBottom: 6 },
+  ratingReason: { color:"#ddd" },
+
+  // Speak
+  recordBtn: { marginTop:16, backgroundColor:"#083", paddingHorizontal:18, paddingVertical:12, borderRadius:12 },
+  recordBtnTxt: { color:"#fff", fontWeight:"800" },
+});
