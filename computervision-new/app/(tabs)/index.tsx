@@ -4,9 +4,10 @@ import { View, Text, Pressable, StyleSheet, Dimensions, Animated, Platform, Imag
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Rect } from "react-native-svg";
+// ❌ fjernet: import translate from '@vitalets/google-translate-api';
 
 const MODEL = "gpt-4.1-mini";        // mer presis: "o4-mini" (tregere)
-const MAX_SIDE = 768;               // 512 = raskere / 960 = mer nøyaktig
+const MAX_SIDE = 768;                 // 512 = raskere / 960 = mer nøyaktig
 const JPEG_QUALITY = 0.85;
 
 const PROMPT = `
@@ -46,8 +47,6 @@ VALIDERING FØR SVAR
 Returner deretter KUN JSON i skjemaet over.
 `;
 
-
-
 const { width: SW, height: SH } = Dimensions.get("window");
 
 export default function Screen() {
@@ -67,6 +66,10 @@ export default function Screen() {
   // Loading bar
   const [loading, setLoading] = useState(false);
   const prog = useRef(new Animated.Value(0)).current;
+
+  // Oversettelse state
+  const [barExpanded, setBarExpanded] = useState(false);
+  const [predictionsWithEn, setPredictionsWithEn] = useState<any[]>([]);
 
   useEffect(() => { if (!permission?.granted) requestPermission(); }, [permission]);
 
@@ -106,18 +109,8 @@ export default function Screen() {
         base64: true,
       });
 
-      // 2) speil om front
-      let base = photo;
-      if (facing === "front") {
-        base = await ImageManipulator.manipulateAsync(
-          photo.uri,
-          [{ flip: ImageManipulator.FlipType.Horizontal }],
-          { compress: JPEG_QUALITY, base64: true }
-        );
-      }
-
       // 3) resize
-      const r = await resizeToMaxSide(base, MAX_SIDE, JPEG_QUALITY);
+      const r = await resizeToMaxSide(photo, MAX_SIDE, JPEG_QUALITY);
 
       // 4) vis freeze med loading
       setPreviewUri(r.uri);
@@ -138,6 +131,82 @@ export default function Screen() {
   };
 
   const closePreview = () => { setPreviewUri(null); setBoxes([]); };
+
+  // -------------------
+  // Oversett labels til engelsk via OpenAI (RN-kompatibel)
+  // Beholder samme API som før, men bytter implementasjon.
+  // Med enkel cache for å unngå duplikatkall inne i samme session.
+  const translationCache = useRef(new Map()).current;
+  async function translateToEnglish(norsk: string) {
+    if (!norsk) return norsk;
+
+    const cached = translationCache.get(norsk);
+    if (cached) return cached;
+
+    const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+    if (!key) {
+      console.warn("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
+      return norsk;
+    }
+
+    const body = {
+      model: "gpt-4o-mini",
+      input: `Oversett ordet "${norsk}" til engelsk. Svar med kun ett ord (ingen tegnsetting).`,
+      temperature: 0,
+      max_output_tokens: 32,
+    };
+
+    try {
+      const rsp = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${key}`,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!rsp.ok) {
+        const txt = await rsp.text();
+        console.warn("Translate failed:", rsp.status, txt);
+        return norsk;
+      }
+
+      const json = await rsp.json();
+      // 🔧 Bruk samme robuste parser som du bruker ellers:
+      const out =
+        (typeof json.output_text === "string" && json.output_text) ||
+        getOutputText(json) ||
+        "";
+
+      const en = out.trim() || norsk;
+      translationCache.set(norsk, en);
+      return en;
+    } catch (err) {
+      console.warn("Translate error:", err);
+      return norsk;
+    }
+  }
+
+  // -------------------
+
+  // Oppdater oversettelser når boxes endres
+  useEffect(() => {
+    async function updateTranslations() {
+      if (boxes.length === 0) {
+        setPredictionsWithEn([]);
+        return;
+      }
+      const arr = await Promise.all(
+        boxes.map(async b => ({
+          ...b,
+          en: await translateToEnglish(b.label)
+        }))
+      );
+      setPredictionsWithEn(arr);
+    }
+    updateTranslations();
+  }, [boxes]);
 
   if (!permission) return <Center><Text>Ber om kameratilgang…</Text></Center>;
   if (!permission.granted) {
@@ -166,7 +235,7 @@ export default function Screen() {
       {/* fullskjerm kamera */}
       <CameraView
         ref={cameraRef}
-        style={[StyleSheet.absoluteFill, { transform: [{ scaleX: facing === "front" ? -1 : 1 }] }]}
+        style={[StyleSheet.absoluteFill, { transform: [{ scaleX: facing === "front" ? 1 : 1 }] }]} // -1 : 1 for speilvendt
         facing={facing}
       />
 
@@ -219,6 +288,28 @@ export default function Screen() {
 
       {/* flash */}
       <Animated.View pointerEvents="none" style={[styles.flash, { opacity: flashAnim }]} />
+
+      {/* Prediction bar */}
+      {predictionsWithEn.length > 0 && (
+        <Pressable
+          style={[
+            styles.predBar,
+            barExpanded ? styles.predBarExpanded : styles.predBarCollapsed
+          ]}
+          onPress={() => setBarExpanded(e => !e)}
+        >
+          <View style={styles.predList}>
+            {predictionsWithEn.map((b, i) => (
+              <View key={i} style={styles.predRow}>
+                <Text style={styles.predLabel}>{b.label}</Text>
+                <Text style={styles.predArrow}>→</Text>
+                <Text style={styles.predEn}>{b.en}</Text>
+                <Text style={styles.predConf}>{(b.conf ?? 0).toFixed(2)}</Text>
+              </View>
+            ))}
+          </View>
+        </Pressable>
+      )}
     </View>
   );
 }
@@ -253,22 +344,22 @@ async function callOpenAI(b64, model, signal) {
   const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
   if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
 
-const body = {
-  model,
-  temperature: 0, // mer deterministisk
-  max_output_tokens: 300,
-  input: [{
-    role: "user",
-    content: [
-      { type: "input_text", text: PROMPT },
-      { 
-        type: "input_image",
-        image_url: `data:image/jpeg;base64,${b64}`,
-        detail: "high" 
-      },
-    ],
-  }],
-};
+  const body = {
+    model,
+    temperature: 0.5, // mer deterministisk
+    max_output_tokens: 300,
+    input: [{
+      role: "user",
+      content: [
+        { type: "input_text", text: PROMPT },
+        { 
+          type: "input_image",
+          image_url: `data:image/jpeg;base64,${b64}`,
+          detail: "high" 
+        },
+      ],
+    }],
+  };
 
   const rsp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -365,6 +456,30 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.2)", overflow: "hidden",
   },
   barFill: { height: 8, backgroundColor: "yellow" },
+
+  predBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    backgroundColor: "rgba(20,20,20,0.95)",
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    zIndex: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  predBarCollapsed: { bottom: 0, height: "10%" },
+  predBarExpanded: { bottom: 0, height: "80%" },
+  predList: { flex: 1, justifyContent: "flex-start" },
+  predRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  predLabel: { color: "#fff", fontWeight: "700", fontSize: 16, flex: 2 },
+  predArrow: { color: "#fff", fontSize: 16, marginHorizontal: 8 },
+  predEn: { color: "#aaf", fontWeight: "700", fontSize: 16, flex: 2 },
+  predConf: { color: "#ff0", fontWeight: "700", fontSize: 14, marginLeft: 12 },
 });
 
 function Center({ children }) {
