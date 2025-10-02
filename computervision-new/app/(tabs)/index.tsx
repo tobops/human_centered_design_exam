@@ -3,10 +3,14 @@ import React, { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, StyleSheet, Dimensions, Animated, Platform, Image, Modal, TextInput, ScrollView, ActivityIndicator, Alert } from "react-native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
-import Svg, { Rect } from "react-native-svg";
+import Svg, { Rect } from "react-native-svg"; // Rectangle Overlays
 
-let Audio: any = null;                 // 👈 lazy
-if (Platform.OS !== "web") {
+// let means value can be changed or redefined. Used for values that can be changed later
+// const means value cant be changed or redefined. Used for Constants that remain the same throughout the program
+// any means we ignore type checking for this variable
+
+let Audio: any = null;                 // lazy load (loads only when needed)
+if (Platform.OS !== "web") { // which platform user runs on (web not supported)
   // @ts-ignore
   Audio = require("expo-av").Audio;
 }
@@ -37,139 +41,157 @@ UNIVERSELLE PRINSIPPER ...
 (… alt videre som du hadde …)
 `;
 
-const { width: SW, height: SH } = Dimensions.get("window");
+const { width: SW, height: SH } = Dimensions.get("window"); // Get window dimensions of the device screen.
+// Returns:
+// SW: Screen Width
+// SH: Screen Height
 
+// Main component, everything in here is what we see on the screen
 export default function Screen() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView>(null);
+  const [permission, requestPermission] = useCameraPermissions(); // Ask for camera permission
+  const cameraRef = useRef<CameraView>(null); // Reference to the camera, used to take pictures
 
-  const [facing, setFacing] = useState<"front"|"back">("front");
-  const [busy, setBusy] = useState(false);
+  // Use state: 
+  // [value, setValue (function)] = useState(initialValue)
+
+  const [facing, setFacing] = useState<"front"|"back">("back"); // Get camera facing direction, default to back
+  const [busy, setBusy] = useState(false); // Busy state to prevent multiple camera captures
 
   // Preview state
-  const [previewUri, setPreviewUri] = useState<string | null>(null);
-  const [imgW, setImgW] = useState(0);
-  const [imgH, setImgH] = useState(0);
+  const [previewUri, setPreviewUri] = useState<string | null>(null); // Saves URI of the captured image
+  const [imgW, setImgW] = useState(0); // Captured Image width
+  const [imgH, setImgH] = useState(0); // Captured Image height
+
+  // Detections state, returns: [{label, conf, x1, y1, x2, y2}, ...]
   const [boxes, setBoxes] = useState<any[]>([]);
-  const flashAnim = useRef(new Animated.Value(0)).current;
+  const flashAnim = useRef(new Animated.Value(0)).current; // Animation for flash effect, returns: value from 0 to 1
 
   // Loading bar
-  const [loading, setLoading] = useState(false);
-  const prog = useRef(new Animated.Value(0)).current;
+  const [loading, setLoading] = useState(false); // Loading state for the loading bar (true/false)
+  const prog = useRef(new Animated.Value(0)).current; // number from 0 to 1 for progress bar animation (0 empty, 1 full)
 
   // Oversettelse state
-  const [barExpanded, setBarExpanded] = useState(false);
+  const [barExpanded, setBarExpanded] = useState(false); // False = collapsed, True = expanded state for all predictions bar
   const [predictionsWithEn, setPredictionsWithEn] = useState<any[]>([]);
 
   // 🔵 NEW: Task modal state
-  const [taskOpen, setTaskOpen] = useState(false);
-  const [taskWord, setTaskWord] = useState<{no:string,en:string}|null>(null);
-  const [taskTab, setTaskTab] = useState<"menu"|"write"|"speak"|"answer">("menu");
+  const [taskOpen, setTaskOpen] = useState(false); // Is Task modal(tab) open? (true/false)
+  const [taskWord, setTaskWord] = useState<{no:string,en:string}|null>(null); // Current task word {no, en}
+  const [taskTab, setTaskTab] = useState<"menu"|"write"|"speak"|"answer">("menu"); // Current tab in Task modal (menu, write, speak, answer)
 
   // 🔵 NEW: Exercises & evaluation state
+
+  // 3 lists with tasks (write, speak, answer)
   const [exercises, setExercises] = useState<{write:string[], speak:string[], answer:string[]}>({write:[], speak:[], answer:[]});
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [userText, setUserText] = useState("");
-  const [rating, setRating] = useState<{score:number,reason:string}|null>(null);
-  const [genBusy, setGenBusy] = useState(false);
-  const [evalBusy, setEvalBusy] = useState(false);
+  const [currentIndex, setCurrentIndex] = useState(0); // Current exercise index (0, 1, 2)
+  const [userText, setUserText] = useState(""); // User input text (for write & transcribed speak)
+  const [rating, setRating] = useState<{score:number,reason:string}|null>(null); // Rating result {score, reason} or null if not rated yet
+  const [genBusy, setGenBusy] = useState(false); // Is exercise generation in progress? (true/false)
+  const [evalBusy, setEvalBusy] = useState(false); // Is answer evaluation in progress? (true/false)
 
   // 🔵 NEW: Audio record state
-  const [recording, setRecording] = useState<Audio.Recording|null>(null);
-  const [micGranted, setMicGranted] = useState<boolean | null>(null);
+  const [recording, setRecording] = useState<Audio.Recording|null>(null); //Recording object from expo-av or null if not recording
+  const [micGranted, setMicGranted] = useState<boolean | null>(null); // Microphone permission state (true/false/null)
 
   useEffect(() => { if (!permission?.granted) requestPermission(); }, [permission]);
 
+  //Check or request microphone permission
   const ensureMic = async () => {
     if (!Audio) {
-      Alert.alert("Ikke støttet", "Taleopptak er ikke tilgjengelig på denne plattformen.");
+      Alert.alert("Not Supported", "Voice recording is not supported on this device.");
       return;
     }
-    const { status } = await Audio.requestPermissionsAsync();
+    const { status } = await Audio.requestPermissionsAsync(); // Request microphone permission
     setMicGranted(status === "granted");
     return status === "granted";
   };
 
+  // Flash
   const flash = () => {
     flashAnim.setValue(1);
-    Animated.timing(flashAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start();
+    Animated.timing(flashAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start(); //Fade out (duration 150ms)
   };
 
-  const onFlip = () => setFacing(f => (f === "front" ? "back" : "front"));
+  const onFlip = () => setFacing(f => (f === "front" ? "back" : "front")); // Flip camera
 
-  const startProgress = () => {
-    setLoading(true);
-    prog.setValue(0);
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(prog, { toValue: 0.7, duration: 900, useNativeDriver: false }),
-        Animated.timing(prog, { toValue: 1.0, duration: 500, useNativeDriver: false }),
+  // Loading bar animations
+  const startProgress = () => { // Start loading bar animation
+    setLoading(true); // Set loading state to true
+    prog.setValue(0); // Reset progress to 0
+    Animated.loop( // Loop the animation from here
+      Animated.sequence([ // Sequence of animations
+        Animated.timing(prog, { toValue: 0.7, duration: 900, useNativeDriver: false }), // Animate from 0% to 70% in 900ms
+        Animated.timing(prog, { toValue: 1.0, duration: 500, useNativeDriver: false }), // Animate from 70% to 100% in 500ms
       ])
-    ).start();
+    ).start(); // Start the animation loop
   };
-  const stopProgress = () => {
-    Animated.timing(prog, { toValue: 1, duration: 120, useNativeDriver: false }).start(() => {
-      setLoading(false);
-      prog.setValue(0);
+  const stopProgress = () => { // Stop loading bar animation
+    Animated.timing(prog, { toValue: 1, duration: 120, useNativeDriver: false }).start(() => { // Animate from current value to 100% in 120ms
+      setLoading(false); // Set loading state to false
+      prog.setValue(0); // Reset progress to 0
     });
   };
 
   const takeAndPredict = async () => {
-    if (!cameraRef.current || busy) return;
+    if (!cameraRef.current || busy) return; // return if camera not ready or busy
     try {
-      setBusy(true);
+      setBusy(true); // Set busy state to true  
 
-      // 1) foto
-      const photo = await cameraRef.current.takePictureAsync({
-        skipProcessing: true,
-        quality: JPEG_QUALITY,
-        base64: true,
-      });
+      // 1) Photo
+      // await: wait for image to get ready. App wont freeze.
+      const photo = await cameraRef.current.takePictureAsync({ // Take picture with camera
+        skipProcessing: true, // Skip additional processing for faster capture
+        quality: JPEG_QUALITY, // JPEG quality (const, 0.85)
+        base64: true, // Include base64 data in the result (text format of image)
+      }); // output: photo.uri, photo.width, photo.height, photo.base64
 
       // 3) resize
-      const r = await resizeToMaxSide(photo, MAX_SIDE, JPEG_QUALITY);
+      const r = await resizeToMaxSide(photo, MAX_SIDE, JPEG_QUALITY); // Resize image to max side (const, 768px)
 
-      // 4) vis freeze med loading
-      setPreviewUri(r.uri);
-      setImgW(r.w); setImgH(r.h);
-      setBoxes([]);
-      flash(); startProgress();
+      // 4) Show frozen preview + ready loading
+      setPreviewUri(r.uri); // Show preview of captured image
+      setImgW(r.w); setImgH(r.h); // Save image dimensions
+      setBoxes([]); // Clear previous boxes
+      flash(); startProgress(); // Flash effect + start loading bar
 
-      // 5) kall OpenAI med timeout
-      const dets = await callOpenAIWithTimeout(r.b64, MODEL, 15000); // 15s cut
-      const px = detectionsToPixels(dets, r.w, r.h);
-      setBoxes(px);
-    } catch (e) {
+      // 5) Call OpenAI with timeout
+      const dets = await callOpenAIWithTimeout(r.b64, MODEL, 15000); // Call OpenAI with base64 image, model (const) and 15s timeout
+      const px = detectionsToPixels(dets, r.w, r.h); // Convert normalized boxes to pixel values
+      setBoxes(px); // Save boxes to state
+    } catch (e) { // catch errors and log them in console
       console.warn("predict failed", e);
-    } finally {
-      stopProgress();
-      setBusy(false);
+    } finally { // cleanup (finally always runs)
+      stopProgress(); // Stop loading bar 
+      setBusy(false); // Set busy state to false so user can use app again
     }
   };
 
-  const closePreview = () => { setPreviewUri(null); setBoxes([]); };
+  const closePreview = () => { setPreviewUri(null); setBoxes([]); }; // Close preview and clear boxes (used when pressing X)
 
   // -------------------
   // Oversett labels til engelsk via OpenAI (RN-kompatibel)
-  const translationCache = useRef(new Map()).current;
-  async function translateToEnglish(norsk: string) {
-    if (!norsk) return norsk;
+  // map(): (key, value) => newValue
+  // .current: get current value of ref (not refrence object itself)
+  const translationCache = useRef(new Map()).current; // Cache for translations to avoid duplicate API calls
+  async function translateToEnglish(norsk: string) { // Translate Norwegian label to English
+    if (!norsk) return norsk; // Return if empty
     const cached = translationCache.get(norsk);
-    if (cached) return cached;
+    if (cached) return cached; // Return cached translation if available
 
-    const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-    if (!key) {
+    const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY; // Get OpenAI API key from environment variables (safe API storage)
+    if (!key) { // if no key, log warning and return original Norwegian word
       console.warn("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
       return norsk;
     }
 
     const body = {
-      model: "gpt-4o-mini",
+      model: "gpt-4o-mini", // Fast & cheap
       input: `Oversett det norske ordet "${norsk}" til engelsk. Gi bare det korteste og mest vanlige oversettelsesordet. Ikke fantasér. Svar med ett ord.`,
-      temperature: 0,
+      temperature: 0.3, // deterministic
       max_output_tokens: 32, // >=16
     };
-    try {
+    try { // try-catch for error handling
+    
       const rsp = await fetch("https://api.openai.com/v1/responses", {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
@@ -177,25 +199,25 @@ export default function Screen() {
       });
       if (!rsp.ok) {
         console.warn("Translate failed:", rsp.status, await rsp.text());
-        return norsk;
+        return norsk; // return original if error
       }
-      const json = await rsp.json();
-      const out = getOutputText(json) || (json?.output_text ?? "");
-      const en = (out || norsk).trim();
-      translationCache.set(norsk, en);
-      return en;
-    } catch (err) {
-      console.warn("Translate error:", err);
-      return norsk;
+      const json = await rsp.json(); // parse JSON response
+      const out = getOutputText(json) || (json?.output_text ?? ""); // getOutputText extracts text from response
+      const en = (out || norsk).trim(); // Fallback til norsk hvis tomt and trim whitespace
+      translationCache.set(norsk, en); // Cache translation
+      return en; // Return translated word
+    } catch (err) { // catch errors and log them
+      console.warn("Translate error:", err); // Log error
+      return norsk; // return original if error
     }
   }
   // -------------------
 
   // Oppdater oversettelser når boxes endres
   useEffect(() => {
-    async function updateTranslations() {
-      if (boxes.length === 0) {
-        setPredictionsWithEn([]);
+    async function updateTranslations() { // Update translations for all detected boxes
+      if (boxes.length === 0) { // If no boxes, clear translations
+        setPredictionsWithEn([]); // Clear predictions
         return;
       }
       const arr = await Promise.all(
