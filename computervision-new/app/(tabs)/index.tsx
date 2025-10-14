@@ -1,8 +1,26 @@
 // First Step:
   // 1. Show Live Camera ===FINISHED===
-  // 2. Take picture with a button
-  // 3. Show image on screen
-  // 4. Return to camera by pressing the "X"
+  // 2. Take picture with a button ===FINISHED===
+  // 3. Show image on screen ===FINISHED===
+  // 4. Return to camera by pressing the "X" ===FINISHED===
+
+// Second Step:
+  // 1. Make item recognition and print in log
+  // 2. Add a button to choose from different languages:
+      // English, Spanish, Polish
+  // 3. Choose which language to log. output: (norwegian word, chosen language word) 
+  // 4. Add accurate boxes around objects and show them with norwegian label.
+
+// Third Step:
+  // 1. Add a modal that user can drag up to see
+  // 2. Show both the norwegian word and translated word
+  // 3. Add a "read text" speech button. (button, norwegian word, translated word)
+
+// Fourth Step:
+  // 1. Add "Task" button on the right of each word
+  // 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject)
+  // 3. Add correct assesment to answer with score from 1-6 and explanation
+  // 4. Make a button to make task with two or more items in image
 
   
   /* #######################################  IMPORTS  ####################################### */
@@ -25,6 +43,8 @@ const MAX_SIDE = 768
 // Main Function
 export default function Screen() {
 
+    /* ----------  REFERENCES  ---------- */
+
   const [busy, setBusy] = useState(false) // Busy State (true/false)
 
   const [permission, requestPermission] = useCameraPermissions(); // Camera Access
@@ -35,6 +55,9 @@ export default function Screen() {
 
   // DEBUGGING
   const startTimeRef = useRef<number | null>(null); // Stopwatch
+
+  /* ----------  HELPER FUNCTIONS  ---------- */
+
 
   const logWithTime = (msg: string) => {
     const now = Date.now();
@@ -79,7 +102,7 @@ export default function Screen() {
   }
   
 
-  // Logic for Camera
+  /* ----------  MAIN LOGIC  ---------- */
 
   // 1. Before knowing the permission
   if (!permission) { // if not-permission
@@ -192,10 +215,16 @@ async function resizeToMaxSide(photoUri: string, maxSide: number, quality: numbe
     { compress: quality, base64: true }
   );
   return result;
-
 }
 
-/* #######################################  HELPER FUNCTIONS  ####################################### */
+// Async funciton to be sure openai can recieve prompt
+async function callOpenAIWithTimeout(b64, model, ms) {
+  const control = new AbortController();
+  const timeout = setTimeout(() => control.abort(), ms);
+  try { return await callOpenAI(b64, model, control.signal); }
+  finally { clearTimeout(timeout); }
+}
+
 
 
 /* #######################################  STYLES  ####################################### */
