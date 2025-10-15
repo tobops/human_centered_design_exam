@@ -5,10 +5,10 @@
   // 4. Return to camera by pressing the "X" ===FINISHED===
 
 // Second Step:
-  // 1. Make item recognition and print in log
-  // 2. Add a button to choose from different languages:
-      // English, Spanish, Polish
-  // 3. Choose which language to log. output: (norwegian word, chosen language word) 
+  // 1. Make item recognition and print in log ===FINISHED===
+  // 2. Add a button to choose from different languages: ===FINISHED===
+      // English, Spanish, Polish, italian ===FINISHED===
+  // 3. Choose which language to log. output: (norwegian word, chosen language word) ===FINISHED===
   // 4. Add accurate boxes around objects and show them with norwegian label.
 
 // Third Step:
@@ -29,14 +29,51 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { View, Text, Pressable, StyleSheet, Animated, Image} from "react-native";
 import * as ImageManipulator from "expo-image-manipulator";
 import { MaterialIcons } from '@expo/vector-icons';
-
-
+import Svg, { Image as SvgImage, Rect, Path, Text as SvgText } from "react-native-svg";
 
 
 /* #######################################  CONSTRAINTS / CONFIG  ####################################### */
 
 const CAMERA_QUALITY = 0.8;
-const MAX_SIDE = 768
+const MAX_SIDE = 640
+
+const MODEL = "gpt-4o-mini"; // What GPT model to use for image detection
+const OPENAI_URL = "https://api.openai.com/v1/responses";
+
+
+const LANGUAGES = [
+  { label: "English", code: "en" },
+  { label: "Spanish", code: "es" },
+  { label: "Polish", code: "pl" },
+  { label: "Italian", code: "it"},
+  { label: "French", code: "fr"},
+  { label: "German", code: "de"},
+]
+
+function flagFor(code: string) {
+  // Simple Emoji for flag
+  const map: Record<string, string> = {
+    en: "🇬🇧",
+    es: "🇪🇸",
+    pl: "🇵🇱",
+    it: "🇮🇹",
+    fr: "🇫🇷",
+    de: "🇩🇪",
+  };
+  return map[code] ?? "🏳️";
+}
+
+const BUBBLE = {
+  font: 12,      // tekststørrelse
+  padX: 15,      // horisontal padding
+  padY: 6,       // vertikal padding
+  minW: 70,      // min bredde
+  maxW: 240,     // maks bredde
+  radius: 8,     // hjørner
+  tip: 12,       // lengde på spiss
+  stroke: "#3b82f6",
+  strokeW: 3,
+};
 
 /* #######################################  COMPONENT  ####################################### */
 
@@ -45,6 +82,13 @@ export default function Screen() {
 
     /* ----------  REFERENCES  ---------- */
 
+  const [detections, setDetections] = useState<Array<{
+    label_NO: string; label_TRANS: string;
+    confidence: number; cx: number; cy: number; cx_norm: number; cy_norm: number;
+  }>>([]);
+
+  const [aiSize, setAiSize] = useState<{w:number; h:number} | null>(null);
+
   const [busy, setBusy] = useState(false) // Busy State (true/false)
 
   const [permission, requestPermission] = useCameraPermissions(); // Camera Access
@@ -52,6 +96,9 @@ export default function Screen() {
 
   // Preview State
   const [previewUri, setPreviewUri] = useState<string | null>(null); // Saves URI of the captured image
+
+  // Language chosen (use setTargetLang("language_code") to change language)
+  const [targetLang, setTargetLang] = useState("en");
 
   // DEBUGGING
   const startTimeRef = useRef<number | null>(null); // Stopwatch
@@ -82,13 +129,48 @@ export default function Screen() {
         quality: CAMERA_QUALITY,
         base64: true,
       });
-      setPreviewUri(photo.uri)
-      logWithTime("SENT = Preview")
-
+      
       // Resize Image
       logWithTime("START = Resizing");
       const photo_resized = await resizeToMaxSide(photo.uri, MAX_SIDE, CAMERA_QUALITY)
       logWithTime("END = Resizing");
+      setPreviewUri(photo_resized.uri!)
+      logWithTime("SENT = Preview")
+      setAiSize({ w: photo_resized.width!, h: photo_resized.height! });
+
+
+      // Send to OpenAI for Object Detection
+      logWithTime("START = Object Detection");
+      try {
+        const prompt = buildVisionPrompt(targetLang, photo_resized.width!, photo_resized.height!);
+        logWithTime("FINISHED = Building Prompt")
+        const aiText = await callOpenAIWithTimeout(photo_resized.base64!, prompt, 25000);
+        logWithTime("FINISHED = Called OpenAI")
+        console.log("AI RAW:", aiText);
+
+        const parsed = JSON.parse(aiText);
+        const objs = Array.isArray(parsed?.objects) ? parsed.objects : [];
+        logWithTime("STARTING = Cleaning JSON")
+        const clean = objs.map((o: any) => ({
+          label_NO: String(o.label_NO ?? ""),
+          label_TRANS: String(o.label_TRANS ?? ""),
+          confidence: Number(o.confidence ?? 0),
+          cx: Number(o.center_px?.x ?? 0),
+          cy: Number(o.center_px?.y ?? 0),
+          cx_norm: Number(o.center_norm?.x ?? 0),
+          cy_norm: Number(o.center_norm?.y ?? 0),
+        })).filter((o:any) => 
+          Number.isFinite(o.cx) && Number.isFinite(o.cy)
+        );
+
+        setDetections(clean);
+        console.log("POINTS:", clean);
+      } catch (err) {
+        console.log("AI ERROR:", err);
+        setDetections([])
+      }
+      logWithTime("END = Object Detection")
+
 
     } catch (e) { // Catch Errors
       console.log("Error Time")
@@ -127,22 +209,74 @@ export default function Screen() {
 
   // 3. If there exist a preview, show it. (runs after taking picture)
   if (previewUri) {
-    return console.log("Return = Preview"),(
+    return console.log("Return = Preview"), (
       <View style={StyleSheet.absoluteFill}>
+        {/* Bildevisningen */}
         <Image
           source={{ uri: previewUri }}
           style={StyleSheet.absoluteFill}
           resizeMode="contain"
         />
-        <Pressable style={styles.btnExitPreview} onPress={() => setPreviewUri(null)}>
+
+        {/* 🔹 Detection Bubbles */}
+        {aiSize && detections.length > 0 && (
+          <Svg
+            style={StyleSheet.absoluteFill}
+            viewBox={`0 0 ${aiSize.w} ${aiSize.h}`}
+          >
+            {detections.map((d, i) => {
+              const { w, h } = sizeBubble(d.label_NO);
+              const bx = d.cx - w / 2;
+              const by = d.cy - (h + BUBBLE.tip);
+
+              return (
+                <React.Fragment key={i}>
+                  {/* Bubble */}
+                  <Rect
+                    x={bx} y={by} width={w} height={h}
+                    rx={BUBBLE.radius} ry={BUBBLE.radius}
+                    fill="#fff" stroke={BUBBLE.stroke} strokeWidth={BUBBLE.strokeW}
+                  />
+                  {/* Tip */}
+                  <Path
+                    d={`M ${d.cx - 10} ${by + h} L ${d.cx} ${d.cy} L ${d.cx + 10} ${by + h} Z`}
+                    fill="#fff" stroke={BUBBLE.stroke} strokeWidth={BUBBLE.strokeW}
+                  />
+                  {/* Text */}
+                  <SvgText
+                    x={d.cx}
+                    y={by + h / 2 + BUBBLE.font * 0.35}
+                    fontSize={BUBBLE.font}
+                    fontWeight="600"
+                    fill={BUBBLE.stroke}
+                    textAnchor="middle"
+                  >
+                    {d.label_NO.toUpperCase()}
+                  </SvgText>
+                </React.Fragment>
+              );
+            })}
+          </Svg>
+        )}
+
+        {/* Close Button */}
+        <Pressable
+          style={styles.btnExitPreview}
+          onPress={() => {
+            setPreviewUri(null);
+            setDetections([]); // Empty Detection bubble
+          }}
+        >
           <MaterialIcons name="close" size={32} color="#fff" />
         </Pressable>
       </View>
-    )
+    );
   }
 
+
   // 4. Given Camera Permission: Show live camera (back)
-  return console.log("Returned = Screen"),(
+  console.log("Returned = Screen  |  Language = ", targetLang);
+  return (
     <View style={styles.root}>
       <CameraView
         ref={cameraRef}
@@ -150,10 +284,15 @@ export default function Screen() {
         facing="back"
         zoom={0.05}
       />
-      
+      {/* språkmeny + capture */}
+      <ChangeLanguageButton
+        languages={LANGUAGES}
+        selected={targetLang}
+        onSelect={setTargetLang}
+      />
       <CaptureButton onPress={handleCapture}/>
     </View>
-  ); 
+  );
 }
 
 
@@ -198,6 +337,46 @@ function CaptureButton({ onPress, disabled=false }: { onPress: () => void; disab
   );
 }
 
+function ChangeLanguageButton({
+  languages,
+  selected,
+  onSelect,
+}: {
+  languages: { label: string; code: string }[];
+  selected: string;
+  onSelect: (code: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const current = languages.find(l => l.code === selected) ?? languages[0];
+
+  return (
+    <View style={langStyles.wrap}>
+      {/* Hovedknappen */}
+      <Pressable style={langStyles.mainBtn} onPress={() => setOpen(o => !o)}>
+        <Text style={langStyles.mainTxt}>{flagFor(current.code)}</Text>
+      </Pressable>
+
+      {/* Dropdown */}
+      {open && (
+        <View style={langStyles.dropdown}>
+          {languages.map((l) => (
+            <Pressable
+              key={l.code}
+              style={langStyles.item}
+              onPress={() => { onSelect(l.code); setOpen(false); }}
+            >
+              <Text style={langStyles.itemTxt}>
+                {flagFor(l.code)}  {l.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+
 // ASYNC FUNCTION TO RESIZE IMAGE FOR SENDING TO AI
 async function resizeToMaxSide(photoUri: string, maxSide: number, quality: number) {
   // Get image dimensions
@@ -217,14 +396,112 @@ async function resizeToMaxSide(photoUri: string, maxSide: number, quality: numbe
   return result;
 }
 
-// Async funciton to be sure openai can recieve prompt
-async function callOpenAIWithTimeout(b64, model, ms) {
-  const control = new AbortController();
-  const timeout = setTimeout(() => control.abort(), ms);
-  try { return await callOpenAI(b64, model, control.signal); }
-  finally { clearTimeout(timeout); }
+// Function to get the chosen language into prompt
+function getLanguageLabelByCode(code: string) {
+  const match = LANGUAGES.find(l => l.code === code);
+  return match ? match.label : "English" // English as fallback
 }
 
+// Function to build the prompt, with the chosen language
+function buildVisionPrompt(code: string, imgW: number, imgH: number) {
+  const label = getLanguageLabelByCode(code)
+  return `
+    You are a fast vision tagger. Find up to 4 clearly visible distinct objects.
+    After listing them, translate each word into grammatically correct Norwegian best suited for a non-norwegian speaker.
+    Next, translate them again to ${label} in the same manner.
+
+    Return ONLY valid JSON (no prose). Schema:
+    {
+      "objects": [
+        {
+          "label_NO": "norwegian word",
+          "label_TRANS": "${label} word",
+          "confidence": [0,1], 2 decimals of each object
+          "center_px": {"x": 123, "y": 456},
+          "center_norm": {"x": 0.321, "y": 0.789}
+        }
+      ]
+    }
+
+    Rules:
+    - Image size is width=${imgW}, height=${imgH} (pixels). Centers MUST be inside [0,${imgW}] × [0,${imgH}].
+    - "center_px" must be integers; "center_norm" must be decimals in [0,1] with 3 decimals.
+    - Use grammatically correct Norwegian in label_NO and ${label} in label_TRANS.
+    - Confidence in [0,1] with 2 decimals.
+    - No trailing commas. No text outside JSON.
+
+    `.trim();
+}
+
+// Async funciton to be sure openai can recieve prompt
+async function callOpenAIWithTimeout(b64: string, prompt: string, ms: number) {
+  const control = new AbortController();
+  const timeout = setTimeout(() => control.abort(), ms);
+  try {
+    return await callOpenAI(b64, prompt, control.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Function to call OpenAI and get its output text
+async function callOpenAI(b64: string, prompt: string, signal?: AbortSignal) {
+  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+  if (!apiKey) throw new Error("Missing EXPO_PUBLIC_OPEN_API_KEY");
+
+  const response = await fetch(OPENAI_URL, { // Sends a HTTP request to OpenAI
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`, // Send API
+      "Content-Type": "application/json",  // Tells OpenAI that we send a JSON
+    },
+    body: JSON.stringify({
+      model: MODEL, // Which model to use
+      input: [ // What we send to the model. (text prompt, image as b64)
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: prompt },
+            { type: "input_image", image_url: `data:image/jpeg;base64,${b64}` },
+          ],
+        },
+      ],
+      temperature: 0.1,
+    }),
+    signal,
+  });
+
+  // If error
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    throw new Error(`OpenAI error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json(); // Converts from text to JSON
+  const textOut = getOutputText(data); // Extract the text field from openAi's output
+
+  return textOut; // OpenAI's formatted text answer
+}
+
+// Function to extract the Output text from OpenAI
+function getOutputText(data: any): string {
+  // Find all content parts and merge them together
+  return data?.output
+    ?.flatMap((msg: any) => msg?.content ?? [])
+    ?.filter((p: any) => p?.type === "output_text")
+    ?.map((p: any) => p?.text ?? "")
+    ?.join("\n")
+    ?.trim() ?? "";
+}
+
+// Function to size text "bubble" based on text length
+function sizeBubble(label: string) {
+  const charW = Math.round(BUBBLE.font * 0.55);
+  const textW = label.length * charW;
+  const w = Math.min(BUBBLE.maxW, Math.max(BUBBLE.minW, textW + 2 * BUBBLE.padX));
+  const h = BUBBLE.font + 2 * BUBBLE.padY;
+  return { w, h };
+}
 
 
 /* #######################################  STYLES  ####################################### */
@@ -279,10 +556,39 @@ const styles = StyleSheet.create({
     width: 50,
     borderRadius: 30,
     borderWidth: 2,
-    borderColor: "#000",
+    borderColor: "rgba(255,255,255,0.3)",
     backgroundColor: "rgba(0, 0, 0, 0.27)", // 50% transparent green background
-    
-    
-  }
+  },
+  
+});
+
+const langStyles = StyleSheet.create({
+  wrap: {
+    position: "absolute",
+    top: 60,
+    right: 20,
+    zIndex: 999,
+    alignItems: "flex-end",
+  },
+  mainBtn: {
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  mainTxt: { fontSize: 20, color: "#fff" },
+  dropdown: {
+    marginTop: 8,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: 12,
+    paddingVertical: 6,
+    minWidth: 160,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  item: { paddingHorizontal: 12, paddingVertical: 10 },
+  itemTxt: { color: "#fff", fontSize: 16 },
 });
 
