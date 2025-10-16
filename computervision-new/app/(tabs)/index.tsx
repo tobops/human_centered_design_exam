@@ -34,7 +34,7 @@ import Svg, { Image as SvgImage, Rect, Path, Text as SvgText } from "react-nativ
 
 /* #######################################  CONSTRAINTS / CONFIG  ####################################### */
 
-const CAMERA_QUALITY = 0.8;
+const CAMERA_QUALITY = 0.75;
 const MAX_SIDE = 640
 
 const MODEL = "gpt-4o-mini"; // What GPT model to use for image detection
@@ -142,7 +142,7 @@ export default function Screen() {
       // Send to OpenAI for Object Detection
       logWithTime("START = Object Detection");
       try {
-        const prompt = buildVisionPrompt(targetLang, photo_resized.width!, photo_resized.height!);
+        const prompt = buildVisionPrompt(photo_resized.width!, photo_resized.height!);
         logWithTime("FINISHED = Building Prompt")
         const aiText = await callOpenAIWithTimeout(photo_resized.base64!, prompt, 25000);
         logWithTime("FINISHED = Called OpenAI")
@@ -151,17 +151,24 @@ export default function Screen() {
         const parsed = JSON.parse(aiText);
         const objs = Array.isArray(parsed?.objects) ? parsed.objects : [];
         logWithTime("STARTING = Cleaning JSON")
-        const clean = objs.map((o: any) => ({
-          label_NO: String(o.label_NO ?? ""),
-          label_TRANS: String(o.label_TRANS ?? ""),
-          confidence: Number(o.confidence ?? 0),
-          cx: Number(o.center_px?.x ?? 0),
-          cy: Number(o.center_px?.y ?? 0),
-          cx_norm: Number(o.center_norm?.x ?? 0),
-          cy_norm: Number(o.center_norm?.y ?? 0),
-        })).filter((o:any) => 
-          Number.isFinite(o.cx) && Number.isFinite(o.cy)
-        );
+        const clean = objs.map((o: any) => {
+          const x = Number(o.box_px?.x ?? o.center_px?.x ?? 0);
+          const y = Number(o.box_px?.y ?? o.center_px?.y ?? 0);
+          const w = Number(o.box_px?.w ?? 0);
+          const h = Number(o.box_px?.h ?? 0);
+
+          // midten fra boks (fallback: center_px)
+          const cx = w > 0 && h > 0 ? Math.round(x + w / 2) : Number(o.center_px?.x ?? 0);
+          const cy = w > 0 && h > 0 ? Math.round(y + h / 2) : Number(o.center_px?.y ?? 0);
+
+          return {
+            label_NO: "",             // fyll inn senere hvis du vil oversette
+            label_TRANS: "",          // (kan gjøre i eget billig tekstkall)
+            confidence: Number(o.confidence ?? 0),
+            cx, cy,
+            box: { x, y, w, h }
+          };
+        }).filter((o:any) => Number.isFinite(o.cx) && Number.isFinite(o.cy));
 
         setDetections(clean);
         console.log("POINTS:", clean);
@@ -172,7 +179,7 @@ export default function Screen() {
       logWithTime("END = Object Detection")
 
 
-    } catch (e) { // Catch Errors
+    } catch (e) { // Catch Errors 
       console.log("Error Time")
       console.log(e)
     } finally {
@@ -403,33 +410,28 @@ function getLanguageLabelByCode(code: string) {
 }
 
 // Function to build the prompt, with the chosen language
-function buildVisionPrompt(code: string, imgW: number, imgH: number) {
-  const label = getLanguageLabelByCode(code)
+function buildVisionPrompt(imgW: number, imgH: number) {
   return `
-    You are a fast vision tagger. Find up to 4 clearly visible distinct objects.
-    After listing them, translate each word into grammatically correct Norwegian best suited for a non-norwegian speaker.
-    Next, translate them again to ${label} in the same manner.
+    Return ONLY valid JSON, no prose.
 
-    Return ONLY valid JSON (no prose). Schema:
+    Detect up to 4 clearly visible distinct objects in the image and output:
     {
       "objects": [
         {
-          "label_NO": "norwegian word",
-          "label_TRANS": "${label} word",
-          "confidence": [0,1], 2 decimals of each object
-          "center_px": {"x": 123, "y": 456},
-          "center_norm": {"x": 0.321, "y": 0.789}
+          "label": "table",              // short, generic noun in English
+          "confidence": 0.93,            // 2 decimals [0,1]
+          "box_px": {"x": 160, "y": 90, "w": 120, "h": 80},   // integers, within image
+          "center_px": {"x": 220, "y": 130}                   // integer center of that box
         }
       ]
     }
 
     Rules:
-    - Image size is width=${imgW}, height=${imgH} (pixels). Centers MUST be inside [0,${imgW}] × [0,${imgH}].
-    - "center_px" must be integers; "center_norm" must be decimals in [0,1] with 3 decimals.
-    - Use grammatically correct Norwegian in label_NO and ${label} in label_TRANS.
-    - Confidence in [0,1] with 2 decimals.
-    - No trailing commas. No text outside JSON.
-
+    - Image size: width=${imgW}, height=${imgH} px. Keep all coords inside.
+    - Boxes must tightly cover the visible object (avoid background).
+    - Triple Check if your coords is accurate to the objects you are detecting. This is important 
+    - Centers must be the geometric center of your own box.
+    - No trailing commas. Only JSON.
     `.trim();
 }
 
@@ -462,11 +464,11 @@ async function callOpenAI(b64: string, prompt: string, signal?: AbortSignal) {
           role: "user",
           content: [
             { type: "input_text", text: prompt },
-            { type: "input_image", image_url: `data:image/jpeg;base64,${b64}` },
+            { type: "input_image", image_url: `data:image/jpeg;base64,${b64}`, detail: "low" },
           ],
         },
       ],
-      temperature: 0.1,
+      temperature: 0,
     }),
     signal,
   });
