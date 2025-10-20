@@ -1,54 +1,68 @@
 // First Step:
-  // 1. Show Live Camera ===FINISHED===
-  // 2. Take picture with a button ===FINISHED===
-  // 3. Show image on screen ===FINISHED===
-  // 4. Return to camera by pressing the "X" ===FINISHED===
+// 1. Show Live Camera ===FINISHED===
+// 2. Take picture with a button ===FINISHED===
+// 3. Show image on screen ===FINISHED===
+// 4. Return to camera by pressing the "X" ===FINISHED===
 
 // Second Step:
-  // 1. Make item recognition and print in log ===FINISHED===
-  // 2. Add a button to choose from different languages: ===FINISHED===
-      // English, Spanish, Polish, italian ===FINISHED===
-  // 3. Choose which language to log. output: (norwegian word, chosen language word) ===FINISHED===
-  // 4. Add accurate boxes around objects and show them with norwegian label.
+// 1. Make item recognition and print in log ===FINISHED===
+// 2. Add a button to choose from different languages: ===FINISHED===
+// English, Spanish, Polish, italian ===FINISHED===
+// 3. Choose which language to log. output: (norwegian word, chosen language word) ===FINISHED===
+// 4. Add accurate boxes around objects and show them with norwegian label.
 
 // Third Step:
-  // 1. Add a modal that user can drag up to see
-  // 2. Show both the norwegian word and translated word
-  // 3. Add a "read text" speech button. (button, norwegian word, translated word)
+// 1. Add a modal that user can drag up to see
+// 2. Show both the norwegian word and translated word
+// 3. Add a "read text" speech button. (button, norwegian word, translated word)
 
 // Fourth Step:
-  // 1. Add "Task" button on the right of each word
-  // 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject)
-  // 3. Add correct assesment to answer with score from 1-6 and explanation
-  // 4. Make a button to make task with two or more items in image
+// 1. Add "Task" button on the right of each word
+// 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject)
+// 3. Add correct assesment to answer with score from 1-6 and explanation
+// 4. Make a button to make task with two or more items in image
 
-  
-  /* #######################################  IMPORTS  ####################################### */
-import React, { useRef, useState } from "react";
+/* #######################################  IMPORTS  ####################################### */
+import ModalSheet from "../../components/ui/ModalSheet";
+import { initTTS, speakTTS } from "../../components/tts";
+
+import React, { useRef, useState, useEffect } from "react";
 import { CameraView, useCameraPermissions } from "expo-camera";
-import { View, Text, Pressable, StyleSheet, Animated, Image} from "react-native";
+import 'react-native-gesture-handler';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Animated,
+  Image,
+  Dimensions,
+  ScrollView,
+  ViewStyle,
+  StyleProp,
+  TextStyle
+} from "react-native";
 import * as ImageManipulator from "expo-image-manipulator";
-import { MaterialIcons } from '@expo/vector-icons';
-import Svg, { Image as SvgImage, Rect, Path, Text as SvgText } from "react-native-svg";
-
+import { MaterialIcons } from "@expo/vector-icons";
+import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
+import Svg, { Rect, Path, Text as SvgText } from "react-native-svg";
 
 /* #######################################  CONSTRAINTS / CONFIG  ####################################### */
 
-const CAMERA_QUALITY = 0.8;
-const MAX_SIDE = 640
+const CAMERA_QUALITY = 0.7;
+const MAX_SIDE = 640;
 
 const MODEL = "gpt-4o-mini"; // What GPT model to use for image detection
 const OPENAI_URL = "https://api.openai.com/v1/responses";
-
 
 const LANGUAGES = [
   { label: "English", code: "en" },
   { label: "Spanish", code: "es" },
   { label: "Polish", code: "pl" },
-  { label: "Italian", code: "it"},
-  { label: "French", code: "fr"},
-  { label: "German", code: "de"},
-]
+  { label: "Italian", code: "it" },
+  { label: "French", code: "fr" },
+  { label: "German", code: "de" },
+];
 
 function flagFor(code: string) {
   // Simple Emoji for flag
@@ -64,32 +78,54 @@ function flagFor(code: string) {
 }
 
 const BUBBLE = {
-  font: 12,      // tekststørrelse
-  padX: 15,      // horisontal padding
-  padY: 6,       // vertikal padding
-  minW: 70,      // min bredde
-  maxW: 240,     // maks bredde
-  radius: 8,     // hjørner
-  tip: 12,       // lengde på spiss
+  font: 12, // tekststørrelse
+  padX: 15, // horisontal padding
+  padY: 6, // vertikal padding
+  minW: 70, // min bredde
+  maxW: 240, // maks bredde
+  radius: 8, // hjørner
+  tip: 12, // lengde på spiss
   stroke: "#3b82f6",
   strokeW: 3,
 };
+
 
 /* #######################################  COMPONENT  ####################################### */
 
 // Main Function
 export default function Screen() {
+  /* ----------  REFERENCES  ---------- */
 
-    /* ----------  REFERENCES  ---------- */
+  const [detections, setDetections] = useState<
+    Array<{
+      label_NO: string;
+      label_TRANS: string;
+      confidence: number;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      cx: number;
+      cy: number;
+    }>
+  >([]);
 
-  const [detections, setDetections] = useState<Array<{
-    label_NO: string; label_TRANS: string;
-    confidence: number; cx: number; cy: number; cx_norm: number; cy_norm: number;
-  }>>([]);
+  // AI Image Size
+  const [aiSize, setAiSize] = useState<{ w: number; h: number } | null>(null);
 
-  const [aiSize, setAiSize] = useState<{w:number; h:number} | null>(null);
+  // Flash Effect
+  const flashAnim = useRef(new Animated.Value(0)).current; // Animation for flash effect, returns: value from 0 to 1
 
-  const [busy, setBusy] = useState(false) // Busy State (true/false)
+  // Loading bar
+  const [loading, setLoading] = useState(false); // Loading state for the loading bar (true/false)
+  const prog = useRef(new Animated.Value(0)).current; // number from 0 to 1 for progress bar animation (0 empty, 1 full)
+  const SW = Dimensions.get("window").width; // Screen Width
+  const barW = prog.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, SW * 0.6],
+  }); // Width of loading bar based on prog value
+
+  const [busy, setBusy] = useState(false); // Busy State (true/false)
 
   const [permission, requestPermission] = useCameraPermissions(); // Camera Access
   const cameraRef = useRef<CameraView>(null); // "remote" to camera
@@ -97,14 +133,27 @@ export default function Screen() {
   // Preview State
   const [previewUri, setPreviewUri] = useState<string | null>(null); // Saves URI of the captured image
 
+  // Modal State
+  const [modalOpen, setModalOpen] = useState(false);
+
+  //Button Click Animation
+  const buttonAnim = useRef(new Animated.Value(1)).current;
+
   // Language chosen (use setTargetLang("language_code") to change language)
   const [targetLang, setTargetLang] = useState("en");
+
+  useEffect(() => { initTTS(); }, []);
+
+  const [canScroll, setCanScroll] = React.useState(false);
+
+  const handleProgress = (p: number) => {
+    setCanScroll(p < 0.2); //0: full open, 1: peek
+  };
 
   // DEBUGGING
   const startTimeRef = useRef<number | null>(null); // Stopwatch
 
   /* ----------  HELPER FUNCTIONS  ---------- */
-
 
   const logWithTime = (msg: string) => {
     const now = Date.now();
@@ -115,14 +164,140 @@ export default function Screen() {
     console.log(`[+${elapsed}s] ${msg}`);
   };
 
-  
+  // Flash
+  const flash = () => {
+    flashAnim.setValue(1);
+    Animated.timing(flashAnim, {
+      toValue: 0,
+      duration: 150,
+      useNativeDriver: true,
+    }).start(); //Fade out (duration 150ms)
+  };
+
+
+  // Loading bar animations
+  const startProgress = () => {
+    // Start loading bar animation
+    setLoading(true); // Set loading state to true
+    prog.setValue(0); // Reset progress to 0
+    Animated.loop(
+      // Loop the animation from here
+      Animated.sequence([
+        // Sequence of animations
+        Animated.timing(prog, {
+          toValue: 0.7,
+          duration: 900,
+          useNativeDriver: false,
+        }), // Animate from 0% to 70% in 900ms
+        Animated.timing(prog, {
+          toValue: 1.0,
+          duration: 500,
+          useNativeDriver: false,
+        }), // Animate from 70% to 100% in 500ms
+      ])
+    ).start(); // Start the animation loop
+  };
+  const stopProgress = () => {
+    // Stop loading bar animation
+    Animated.timing(prog, {
+      toValue: 1,
+      duration: 120,
+      useNativeDriver: false,
+    }).start(() => {
+      // Animate from current value to 100% in 120ms
+      setLoading(false); // Set loading state to false
+      prog.setValue(0); // Reset progress to 0
+    });
+  };
+
+  type TTSButtonProps = {
+    onPress: () => void;
+
+    // Show MaterialIcon?
+    showIcon?: bool;
+    // MaterialIcon Name?
+    iconName?: keyof typeof MaterialIcons.glyphMap | string;
+    iconSize?: number;
+    iconColor?: string;
+
+    // Show Text Label? (ignored if passed children)
+    showText?: boolean;
+    text?: string;
+    textStyle?: StyleProp<TextStyle>;
+
+    // Optional Style for the outer Button
+    style?: StyleProp<ViewStyle>;
+
+    // Optional custom content; if provided ovverrides ShowIcon/Showtext
+    children?: React.ReactNode;
+  };
+
+  function TTSButton({
+    onPress,
+    showIcon = false,
+    iconName = "multitrack-audio",
+    iconSize = 20,
+    iconColor = "#fff",
+    showText = false,
+    text = "",
+    textStyle,
+    style,
+    children,
+  }: TTSButtonProps) {
+    const scale = useRef(new Animated.Value(1)).current;
+
+    const onPressIn = () => {
+      Animated.spring(scale, {
+        toValue: 1.06, // Little Bigger
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 6,
+      }).start();
+    };
+
+    const onPressOut = () => {
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 6,
+      }).start();
+    };
+    return (
+      <Animated.View style={{ transform: [{ scale }] }}>
+        <Pressable
+          onPressIn={onPressIn}
+          onPressOut={onPressOut}
+          onPress={onPress}
+          style={[
+            {
+
+            },
+            style,
+          ]}
+          >
+            {children ? (
+              children
+            ) : (
+              <>
+                {showIcon && (
+                  <MaterialIcons name={iconName as any} size={iconSize} color={iconColor} />
+                )}
+                {showText && !!text && <Text style={[{ color: "#fff", fontWeight: "600" }, textStyle]}>{text}</Text>}
+              </>
+            )}
+          </Pressable>
+        </Animated.View>
+      );
+    }
+
   const handleCapture = async () => {
-    console.log("PRESSED = Camera_Button")
+    console.log("Camera Capture Pressed");
     if (!cameraRef.current || busy) return; // Return if camera is not ready or busy
     try {
-      logWithTime("STARTET = handleCapture")
+      logWithTime("Started Handling Capture");
       setBusy(true); // Set State to busy
-      
+
       // Wait for image to process without lagging
       const photo = await cameraRef.current.takePictureAsync({
         skipProcessing: true,
@@ -131,63 +306,125 @@ export default function Screen() {
       });
       
       // Resize Image
-      logWithTime("START = Resizing");
-      const photo_resized = await resizeToMaxSide(photo.uri, MAX_SIDE, CAMERA_QUALITY)
-      logWithTime("END = Resizing");
-      setPreviewUri(photo_resized.uri!)
-      logWithTime("SENT = Preview")
-      setAiSize({ w: photo_resized.width!, h: photo_resized.height! });
+      logWithTime("Resizing..");
+      const photo_resized = await resizeToMaxSide(
+        photo.uri,
+        MAX_SIDE,
+        CAMERA_QUALITY
+      );
+      logWithTime("Finished Resizing");
+      setPreviewUri(photo.uri!);
+      logWithTime("Preview Set");
 
+      // Flash Effect
+      flash();
+      startProgress(); // Start flash and loading bar
+
+      setAiSize({ w: photo_resized.width!, h: photo_resized.height! }); // Set AI image size for SVG
 
       // Send to OpenAI for Object Detection
-      logWithTime("START = Object Detection");
+      logWithTime("Started Object Detection");
       try {
-        const prompt = buildVisionPrompt(targetLang, photo_resized.width!, photo_resized.height!);
-        logWithTime("FINISHED = Building Prompt")
-        const aiText = await callOpenAIWithTimeout(photo_resized.base64!, prompt, 25000);
-        logWithTime("FINISHED = Called OpenAI")
-        console.log("AI RAW:", aiText);
+        const label = getLanguageLabelByCode(targetLang);
+        const prompt = buildVisionPrompt(
+          photo_resized.width!,
+          photo_resized.height!,
+          label
+        );
+        logWithTime("Prompt Built");
+        const aiText = await callOpenAIWithTimeout(
+          photo_resized.base64!,
+          prompt,
+          25000
+        );
+        logWithTime("OpenAI Response Received");
+        console.log("AI RAW:", aiText); // Debug: show raw AI output
 
+        // Parse AI Output and convert to pixel boxes
         const parsed = JSON.parse(aiText);
         const objs = Array.isArray(parsed?.objects) ? parsed.objects : [];
-        logWithTime("STARTING = Cleaning JSON")
-        const clean = objs.map((o: any) => ({
-          label_NO: String(o.label_NO ?? ""),
-          label_TRANS: String(o.label_TRANS ?? ""),
-          confidence: Number(o.confidence ?? 0),
-          cx: Number(o.center_px?.x ?? 0),
-          cy: Number(o.center_px?.y ?? 0),
-          cx_norm: Number(o.center_norm?.x ?? 0),
-          cy_norm: Number(o.center_norm?.y ?? 0),
-        })).filter((o:any) => 
-          Number.isFinite(o.cx) && Number.isFinite(o.cy)
-        );
 
-        setDetections(clean);
-        console.log("POINTS:", clean);
-      } catch (err) {
-        console.log("AI ERROR:", err);
-        setDetections([])
+        const px = objs
+          .map((o: any) => {
+            const bn = o?.box_norm || {};
+            const clamp = (v: number, a: number, b: number) =>
+              Math.min(Math.max(+v, a), b);
+            const xc = clamp(bn.xc, 0, 1),
+              yc = clamp(bn.yc, 0, 1),
+              w = clamp(bn.w, 0, 1),
+              h = clamp(bn.h, 0, 1);
+            const x1 = Math.max(
+              0,
+              Math.min(
+                Math.round((xc - w / 2) * photo_resized.width!),
+                photo_resized.width! - 1
+              )
+            );
+            const y1 = Math.max(
+              0,
+              Math.min(
+                Math.round((yc - h / 2) * photo_resized.height!),
+                photo_resized.height! - 1
+              )
+            );
+            const x2 = Math.max(
+              0,
+              Math.min(
+                Math.round((xc + w / 2) * photo_resized.width!),
+                photo_resized.width! - 1
+              )
+            );
+            const y2 = Math.max(
+              0,
+              Math.min(
+                Math.round((yc + h / 2) * photo_resized.height!),
+                photo_resized.height! - 1
+              )
+            );
+            const cx = Math.round((x1 + x2) / 2);
+            const cy = Math.round((y1 + y2) / 2);
+            return {
+              label_NO: String(o.label_NO || ""),
+              label_TRANS: String(o.label_TRANS || ""),
+              desc_NO: String(o.desc_NO || ""),
+              desc_TRANS: String(o.desc_TRANS || ""),
+              confidence: Number(o.confidence || 0),
+              x1,
+              y1,
+              x2,
+              y2,
+              cx,
+              cy,
+            };
+          })
+          .filter((d: any) => d.x2 > d.x1 && d.y2 > d.y1);
+
+        setDetections(px);
+        logWithTime(`DETECTIONS = ${px.length} objects detected`); // Log number of detections
+
+        setModalOpen(true); // Open modal with vocabulary
+
+        logWithTime("Finished Object Detection");
+      } catch (err: any) {
+        console.error("Error during AI processing:", err);
+        setDetections([]); // Empty detections on error
+        stopProgress(); // Stop loading bar on error
       }
-      logWithTime("END = Object Detection")
-
-
-    } catch (e) { // Catch Errors
-      console.log("Error Time")
-      console.log(e)
+    } catch (err: any) {
+      console.error("Error during capture:", err);
     } finally {
-      setBusy(false)
-      logWithTime("END = Capture")
-      startTimeRef.current = null // Reset the timer
+      setBusy(false);
+      stopProgress(); // Stop loading bar
+      logWithTime("Finished Handling Capture");
+      startTimeRef.current = null; // Reset stopwatch
     }
-
-  }
-  
+  };
 
   /* ----------  MAIN LOGIC  ---------- */
 
   // 1. Before knowing the permission
-  if (!permission) { // if not-permission
+  if (!permission) {
+    // if not-permission
     return (
       <Center>
         <Text>Asking For Camera Permission...</Text>
@@ -195,84 +432,223 @@ export default function Screen() {
     );
   }
 
-  // 2. No Camera Permission: Show "Ask for Permission" button 
+  // 2. No Camera Permission: Show "Ask for Permission" button
   if (!permission.granted) {
-    return console.log("Return = Permission"),(
-      <Center>
-        <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
-        <Pressable style={styles.btn} onPress={requestPermission}>
-          <Text style={styles.btnTxt}>Give access</Text>
-        </Pressable>
-      </Center>
+    return (
+      console.log("Return = Permission"),
+      (
+        <Center>
+          <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
+          <Pressable style={styles.btn} onPress={requestPermission}>
+            <Text style={styles.btnTxt}>Give access</Text>
+          </Pressable>
+        </Center>
+      )
     );
   }
 
   // 3. If there exist a preview, show it. (runs after taking picture)
   if (previewUri) {
-    return console.log("Return = Preview"), (
-      <View style={StyleSheet.absoluteFill}>
-        {/* Bildevisningen */}
-        <Image
-          source={{ uri: previewUri }}
-          style={StyleSheet.absoluteFill}
-          resizeMode="contain"
-        />
-
-        {/* 🔹 Detection Bubbles */}
-        {aiSize && detections.length > 0 && (
-          <Svg
+    return (
+      console.log("Return = Preview"),
+      (
+        <View style={StyleSheet.absoluteFill}>
+          {/* Image Preview */}
+          <Image
+            source={{ uri: previewUri }}
             style={StyleSheet.absoluteFill}
-            viewBox={`0 0 ${aiSize.w} ${aiSize.h}`}
+            resizeMode="contain"
+          />
+          {/* Detection Bubbles (center of each detection box) */}
+          {aiSize && detections.length > 0 && (
+            <Svg
+              style={StyleSheet.absoluteFill}
+              viewBox={`0 0 ${aiSize.w} ${aiSize.h}`}
+            >
+              {detections.map((det, i) => {
+                const { w, h } = sizeBubble(det.label_NO); // Calculate bubble size based on label
+                const bx = det.cx - w / 2; // bubble x (centered)
+                const above = det.cy > h + BUBBLE.tip + 6; // place bubble above if enough space
+                const by = above
+                  ? det.cy - (h + BUBBLE.tip)
+                  : det.cy + BUBBLE.tip; // bubble y (above or below)
+                const tipPath = above
+                  ? `M ${det.cx - 10} ${by + h} L ${det.cx} ${det.cy} L ${
+                      det.cx + 10
+                    } ${by + h} Z`
+                  : `M ${det.cx - 10} ${by} L ${det.cx} ${det.cy} L ${
+                      det.cx + 10
+                    } ${by} Z`;
+
+                return (
+                  <React.Fragment key={i}>
+                    {/* debug rectangle around the object, comment in if needed */}
+                    {/* <Rect x={det.x1} y={det.y1} width={det.x2-det.x1} height={det.y2-det.y1} stroke="#ff0" strokeWidth={2} fill="transparent" /> */}
+
+                    {/* Bubble */}
+                    <Rect
+                      x={bx}
+                      y={by}
+                      width={w}
+                      height={h}
+                      rx={BUBBLE.radius}
+                      ry={BUBBLE.radius}
+                      fill="#fff"
+                      stroke={BUBBLE.stroke}
+                      strokeWidth={BUBBLE.strokeW}
+                    />
+                    {/* Tip */}
+                    <Path
+                      d={tipPath}
+                      fill="#fff"
+                      stroke={BUBBLE.stroke}
+                      strokeWidth={BUBBLE.strokeW}
+                    />
+                    {/* Text */}
+                    <SvgText
+                      x={det.cx}
+                      y={by + h / 2 + BUBBLE.font * 0.35}
+                      fontSize={BUBBLE.font}
+                      fontWeight="600"
+                      fill={BUBBLE.stroke}
+                      textAnchor="middle"
+                    >
+                      {det.label_NO.toUpperCase()}
+                    </SvgText>
+                  </React.Fragment>
+                );
+              })}
+            </Svg>
+          )}
+
+          {/* Close Button */}
+          <Pressable
+            style={styles.btnExitPreview}
+            onPress={() => {
+              setPreviewUri(null);
+              setDetections([]); // Empty Detection bubble
+              setModalOpen(false);
+            }}
           >
-            {detections.map((d, i) => {
-              const { w, h } = sizeBubble(d.label_NO);
-              const bx = d.cx - w / 2;
-              const by = d.cy - (h + BUBBLE.tip);
+            <MaterialIcons name="close" size={32} color="#fff" />
+          </Pressable>
 
-              return (
-                <React.Fragment key={i}>
-                  {/* Bubble */}
-                  <Rect
-                    x={bx} y={by} width={w} height={h}
-                    rx={BUBBLE.radius} ry={BUBBLE.radius}
-                    fill="#fff" stroke={BUBBLE.stroke} strokeWidth={BUBBLE.strokeW}
-                  />
-                  {/* Tip */}
-                  <Path
-                    d={`M ${d.cx - 10} ${by + h} L ${d.cx} ${d.cy} L ${d.cx + 10} ${by + h} Z`}
-                    fill="#fff" stroke={BUBBLE.stroke} strokeWidth={BUBBLE.strokeW}
-                  />
-                  {/* Text */}
-                  <SvgText
-                    x={d.cx}
-                    y={by + h / 2 + BUBBLE.font * 0.35}
-                    fontSize={BUBBLE.font}
-                    fontWeight="600"
-                    fill={BUBBLE.stroke}
-                    textAnchor="middle"
-                  >
-                    {d.label_NO.toUpperCase()}
-                  </SvgText>
-                </React.Fragment>
-              );
-            })}
-          </Svg>
-        )}
+          {/* flash */}
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.flash, { opacity: flashAnim }]}
+          />
 
-        {/* Close Button */}
-        <Pressable
-          style={styles.btnExitPreview}
-          onPress={() => {
-            setPreviewUri(null);
-            setDetections([]); // Empty Detection bubble
-          }}
-        >
-          <MaterialIcons name="close" size={32} color="#fff" />
-        </Pressable>
-      </View>
+          {/* Loading Bar */}
+          {loading && (
+            <View style={styles.loadingWrap}>
+              <Text style={styles.loadingTxt}>Processing...</Text>
+              <View style={styles.loadingBarBg}>
+                <Animated.View style={[styles.barFill, { width: barW }]} />
+              </View>
+            </View>
+          )}
+          {/* ========================== MODAL SHEET ========================== */}
+          <ModalSheet
+            // Controls whether the modal is open or not
+            open={modalOpen}
+            // Called whenever modal is dragged up or down
+            onChange={setModalOpen}
+            // How much of the modal is visible in its "peek" position (10%)
+            peekRatio={0.12}
+            // How far you must drag up before it snaps fully open (30%)
+            snapUpThreshold={0.3}
+            // How far you must drag down before it snaps closed (30%)
+            snapDownThreshold={0.3}
+            // Disable full close (modal always stays visible at least in peek state)
+            canClose={false}
+            onProgress={handleProgress}
+          >
+            {/* ==================== SCROLLABLE CONTENT AREA ==================== */}
+            <ScrollView
+              // Allow vertical scrolling when there are many detected items
+              style={{ flex: 1 }}
+              // Add internal padding to prevent content from sticking to edges
+              contentContainerStyle={{
+                paddingTop: 10,
+                paddingBottom: 300, // extra space at bottom so last card isn't cut off
+              }}
+              // Hide default iOS/Android scrollbar for a cleaner look
+              showsVerticalScrollIndicator={false}
+              scrollEnabled={canScroll}
+            >
+              {/* ==================== WRAPPER FOR DETECTION CARDS ==================== */}
+              <View style={styles.detectionsWrap}>
+                {/* Title shown at the top of the modal */}
+                <Text style={styles.title}>Items Detected</Text>
+
+                {/* Map over all AI detections and render one card per object */}
+                {detections.map((det, i) => (
+                  <View key={i} style={styles.itemCard}>
+                    {/* ==================== MAIN ROW: WORDS + BUTTONS ==================== */}
+                    <View style={styles.itemRow}>
+                      {/* LEFT SIDE: detected object in Norwegian + translated word */}
+                      <View style={styles.itemTextWrap}>
+                        <Text style={styles.itemLabel}>
+                          {det.label_NO.charAt(0).toUpperCase() + det.label_NO.slice(1)}
+                        </Text>
+                        <Text style={styles.itemTranslation}>
+                          {det.label_TRANS.charAt(0).toUpperCase() + det.label_TRANS.slice(1)}
+                        </Text>
+                      </View>
+
+                      {/* RIGHT SIDE: action buttons for TTS and Task */}
+                      <View style={styles.buttonRow}>
+                        {/* Text-to-speech (plays the Norwegian label) */}
+                        <TTSButton
+                          onPress={() => speakTTS(det.label_NO)}
+                          showIcon={true}
+                          iconName="multitrack-audio"
+                          style={styles.ttsButton}
+                        />
+                        {/* Future Task button (can open exercises or extra info) */}
+                        <TTSButton
+                          onPress={() => speakTTS("Ikke Tilgjengelig enda")}
+                          showIcon={true}
+                          iconName="tasks"
+                          style={styles.ttsButton}
+                          />
+                      </View>
+                    </View>
+
+                    {/* ==================== FOOTER ROW: DESCRIPTIONS ==================== */}
+                    <View style={styles.descRow}>
+                      {/* Left chip: short Norwegian description of object position */}
+                      <View style={styles.descChip}>
+                        <TTSButton
+                          onPress={() => speakTTS(det.desc_NO)}
+                          showText
+                          text={`🇳🇴 ${det.desc_NO}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
+                          textStyle={styles.descChipText}
+                        />
+                      </View>
+
+                      {/* Right chip: translated description in chosen target language */}
+                      <View style={styles.descChip}>
+                        <TTSButton
+                          onPress={() => speakTTS(det.desc_TRANS)}
+                          showText
+                          text={`${flagFor(targetLang)} ${det.desc_TRANS}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
+                          textStyle={styles.descChipText}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          </ModalSheet>
+
+
+        </View>
+      )
     );
   }
-
 
   // 4. Given Camera Permission: Show live camera (back)
   console.log("Returned = Screen  |  Language = ", targetLang);
@@ -282,7 +658,7 @@ export default function Screen() {
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="back"
-        zoom={0.05}
+        zoom={0.001}
       />
       {/* språkmeny + capture */}
       <ChangeLanguageButton
@@ -290,17 +666,16 @@ export default function Screen() {
         selected={targetLang}
         onSelect={setTargetLang}
       />
-      <CaptureButton onPress={handleCapture}/>
+      <CaptureButton onPress={handleCapture} />
     </View>
   );
 }
-
 
 /* #######################################  SUB-COMPONENTS  ####################################### */
 
 // Function to center item in middle of phone screen
 function Center({ children }: { children: React.ReactNode }) {
-    return (
+  return (
     <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
       {children}
     </View>
@@ -308,28 +683,44 @@ function Center({ children }: { children: React.ReactNode }) {
 }
 
 // SNAPSHOT BUTTON STYLE AND ANIMATION
-function CaptureButton({ onPress, disabled=false }: { onPress: () => void; disabled?: boolean }) {
-  const scale = React.useRef(new Animated.Value(1)).current // Used to scale the snapshot button
+function CaptureButton({
+  onPress,
+  disabled = false,
+}: {
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const scale = React.useRef(new Animated.Value(1)).current; // Used to scale the snapshot button
 
   const pressIn = () => {
     console.log("IN = Capture Button");
-    Animated.spring(scale, { toValue: 0.90, useNativeDriver: true, speed: 18, bounciness: 6}).start();
-  }
+    Animated.spring(scale, {
+      toValue: 0.9,
+      useNativeDriver: true,
+      speed: 18,
+      bounciness: 6,
+    }).start();
+  };
   const pressOut = () => {
     console.log("OUT = Capture Button");
-    Animated.spring(scale, {toValue: 1, useNativeDriver: true, speed: 18, bounciness: 6}).start();
-  }
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 18,
+      bounciness: 6,
+    }).start();
+  };
 
   return (
-    <Animated.View style={[styles.wrap, {transform: [{ scale }]}]}>
+    <Animated.View style={[styles.wrap, { transform: [{ scale }] }]}>
       <View style={styles.outerRing}>
         <View style={styles.innerRing}>
           <Pressable
-          onPressIn={pressIn}
-          onPressOut={pressOut}
-          onPress={() => !disabled && onPress()}
-          android_ripple={{ color: "#ddd", radius: 44 }}
-          style={styles.center}
+            onPressIn={pressIn}
+            onPressOut={pressOut}
+            onPress={() => !disabled && onPress()}
+            android_ripple={{ color: "#ddd", radius: 44 }}
+            style={styles.center}
           />
         </View>
       </View>
@@ -337,6 +728,7 @@ function CaptureButton({ onPress, disabled=false }: { onPress: () => void; disab
   );
 }
 
+// ----- LANGUAGE SELECT DROPDOWN BUTTON -------
 function ChangeLanguageButton({
   languages,
   selected,
@@ -347,12 +739,12 @@ function ChangeLanguageButton({
   onSelect: (code: string) => void;
 }) {
   const [open, setOpen] = React.useState(false);
-  const current = languages.find(l => l.code === selected) ?? languages[0];
+  const current = languages.find((l) => l.code === selected) ?? languages[0];
 
   return (
     <View style={langStyles.wrap}>
       {/* Hovedknappen */}
-      <Pressable style={langStyles.mainBtn} onPress={() => setOpen(o => !o)}>
+      <Pressable style={langStyles.mainBtn} onPress={() => setOpen((o) => !o)}>
         <Text style={langStyles.mainTxt}>{flagFor(current.code)}</Text>
       </Pressable>
 
@@ -363,10 +755,13 @@ function ChangeLanguageButton({
             <Pressable
               key={l.code}
               style={langStyles.item}
-              onPress={() => { onSelect(l.code); setOpen(false); }}
+              onPress={() => {
+                onSelect(l.code);
+                setOpen(false);
+              }}
             >
               <Text style={langStyles.itemTxt}>
-                {flagFor(l.code)}  {l.label}
+                {flagFor(l.code)} {l.label}
               </Text>
             </Pressable>
           ))}
@@ -376,11 +771,17 @@ function ChangeLanguageButton({
   );
 }
 
-
 // ASYNC FUNCTION TO RESIZE IMAGE FOR SENDING TO AI
-async function resizeToMaxSide(photoUri: string, maxSide: number, quality: number) {
+async function resizeToMaxSide(
+  photoUri: string,
+  maxSide: number,
+  quality: number
+) {
   // Get image dimensions
-  const { width, height } = await ImageManipulator.manipulateAsync(photoUri, []);
+  const { width, height } = await ImageManipulator.manipulateAsync(
+    photoUri,
+    []
+  );
   let resize = {};
   if (width > height) {
     resize = { width: maxSide };
@@ -398,39 +799,53 @@ async function resizeToMaxSide(photoUri: string, maxSide: number, quality: numbe
 
 // Function to get the chosen language into prompt
 function getLanguageLabelByCode(code: string) {
-  const match = LANGUAGES.find(l => l.code === code);
-  return match ? match.label : "English" // English as fallback
+  const match = LANGUAGES.find((l) => l.code === code);
+  return match ? match.label : "English"; // English as fallback
 }
 
-// Function to build the prompt, with the chosen language
-function buildVisionPrompt(code: string, imgW: number, imgH: number) {
-  const label = getLanguageLabelByCode(code)
+// 🔄 CHANGED: Build prompt to request NORMALIZED boxes (like code 1)
+function buildVisionPrompt(imgW: number, imgH: number, label: string) {
   return `
-    You are a fast vision tagger. Find up to 4 clearly visible distinct objects.
-    After listing them, translate each word into grammatically correct Norwegian best suited for a non-norwegian speaker.
-    Next, translate them again to ${label} in the same manner.
+Return ONLY valid JSON, no prose.
 
-    Return ONLY valid JSON (no prose). Schema:
+Detect maximum 5 clearly visible distinct objects in the image and output:
+{
+  "objects": [
     {
-      "objects": [
-        {
-          "label_NO": "norwegian word",
-          "label_TRANS": "${label} word",
-          "confidence": [0,1], 2 decimals of each object
-          "center_px": {"x": 123, "y": 456},
-          "center_norm": {"x": 0.321, "y": 0.789}
-        }
-      ]
+      "label_NO": "...",
+      "label_TRANS": "...",
+      "desc_NO": "...",        // ≤8 words
+      "desc_TRANS": "...",     // ≤8 words
+      "confidence": 0.95,                // 2 decimals [0,1]
+      "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 } // normalized to [0,1]
     }
+  ]
+}
 
-    Rules:
-    - Image size is width=${imgW}, height=${imgH} (pixels). Centers MUST be inside [0,${imgW}] × [0,${imgH}].
-    - "center_px" must be integers; "center_norm" must be decimals in [0,1] with 3 decimals.
-    - Use grammatically correct Norwegian in label_NO and ${label} in label_TRANS.
-    - Confidence in [0,1] with 2 decimals.
-    - No trailing commas. No text outside JSON.
+Rules:
+- Image size: width=${imgW}, height=${imgH} px; but return boxes normalized [0,1].
+- xc,yc are the box center; w,h are width/height; 4 decimals; clamp inside [0,1].
+- Boxes must tightly cover the visible object (avoid background).
+- Sort objects by confidence descending.
+- No trailing commas. Only JSON.
 
-    `.trim();
+Rules for labels:
+- Use **specific, concrete nouns** that match what the human would say when pointing at it in real life.
+- Prefer more informative words over generic ones:
+  (e.g. “energidrikk” is better than “boks”).
+- Avoid vague terms like “ting”, “objekt”, “produkt”.
+- label_NO must be in **Norwegian**.
+- label_TRANS must be the same word in **${label}**.
+- Do not invent brand names unless it's the only clear identifier (e.g. a can that clearly shows the brand).
+- Keep it 1-2 words max.
+
+Rules for an extra learning phrase:
+- Add "desc_NO": one short Norwegian phrase (max 8 words) describing what/where the object is in THIS image.
+- Also try to explain objects beside it if possible.
+- No brand names unless obviously visible.
+- No commas, no periods, no capitalization rules—just a phrase (e.g., "energidrikk på bordet").
+- Also add "desc_TRANS": same phrase in ${label} (max 8 words).
+`.trim();
 }
 
 // Async funciton to be sure openai can recieve prompt
@@ -447,26 +862,32 @@ async function callOpenAIWithTimeout(b64: string, prompt: string, ms: number) {
 // Function to call OpenAI and get its output text
 async function callOpenAI(b64: string, prompt: string, signal?: AbortSignal) {
   const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!apiKey) throw new Error("Missing EXPO_PUBLIC_OPEN_API_KEY");
+  if (!apiKey) throw new Error("Missing EXPO_PUBLIC_OPENAI_API_KEY");
 
-  const response = await fetch(OPENAI_URL, { // Sends a HTTP request to OpenAI
+  const response = await fetch(OPENAI_URL, {
+    // Sends a HTTP request to OpenAI
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`, // Send API
-      "Content-Type": "application/json",  // Tells OpenAI that we send a JSON
+      Authorization: `Bearer ${apiKey}`, // Send API
+      "Content-Type": "application/json", // Tells OpenAI that we send a JSON
     },
     body: JSON.stringify({
       model: MODEL, // Which model to use
-      input: [ // What we send to the model. (text prompt, image as b64)
+      input: [
+        // What we send to the model. (text prompt, image as b64)
         {
           role: "user",
           content: [
             { type: "input_text", text: prompt },
-            { type: "input_image", image_url: `data:image/jpeg;base64,${b64}` },
+            {
+              type: "input_image",
+              image_url: `data:image/jpeg;base64,${b64}`,
+              detail: "low",
+            },
           ],
         },
       ],
-      temperature: 0.1,
+      temperature: 0,
     }),
     signal,
   });
@@ -486,19 +907,24 @@ async function callOpenAI(b64: string, prompt: string, signal?: AbortSignal) {
 // Function to extract the Output text from OpenAI
 function getOutputText(data: any): string {
   // Find all content parts and merge them together
-  return data?.output
-    ?.flatMap((msg: any) => msg?.content ?? [])
-    ?.filter((p: any) => p?.type === "output_text")
-    ?.map((p: any) => p?.text ?? "")
-    ?.join("\n")
-    ?.trim() ?? "";
+  return (
+    data?.output
+      ?.flatMap((msg: any) => msg?.content ?? [])
+      ?.filter((p: any) => p?.type === "output_text")
+      ?.map((p: any) => p?.text ?? "")
+      ?.join("\n")
+      ?.trim() ?? ""
+  );
 }
 
 // Function to size text "bubble" based on text length
 function sizeBubble(label: string) {
   const charW = Math.round(BUBBLE.font * 0.55);
   const textW = label.length * charW;
-  const w = Math.min(BUBBLE.maxW, Math.max(BUBBLE.minW, textW + 2 * BUBBLE.padX));
+  const w = Math.min(
+    BUBBLE.maxW,
+    Math.max(BUBBLE.minW, textW + 2 * BUBBLE.padX)
+  );
   const h = BUBBLE.font + 2 * BUBBLE.padY;
   return { w, h };
 }
@@ -506,15 +932,23 @@ function sizeBubble(label: string) {
 
 /* #######################################  STYLES  ####################################### */
 
-const BTN_SIZE = 78;        // Total Size
-const BTN_RING_SIZE = 3;    // White Ring Size
-const BTN_BLACK_SIZE = 4;   // Black Ring Size
-const BTN_BORDER_RADIUS = 3 // Higher => More Squary
+const BTN_SIZE = 78; // Total Size
+const BTN_RING_SIZE = 3; // White Ring Size
+const BTN_BLACK_SIZE = 4; // Black Ring Size
+const BTN_BORDER_RADIUS = 3; // Higher => More Squary
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
-  btn: { backgroundColor: "#2b6", paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8 },
-  btnTxt: { color: "#fff", fontWeight: "700", fontSize: 20, fontFamily: ""},
+  btn: {
+    backgroundColor: "#2b6",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  btnTxt: { color: "#fff", fontWeight: "700", fontSize: 20, fontFamily: "" },
+
+  // Flash Style
+  flash: { ...StyleSheet.absoluteFillObject, backgroundColor: "white" },
 
   // Snapshot Button Style
   wrap: {
@@ -535,13 +969,16 @@ const styles = StyleSheet.create({
     flex: 1,
     width: "100%",
     height: "100%",
-    borderRadius: (BTN_SIZE - BTN_BORDER_RADIUS * BTN_RING_SIZE) / BTN_BORDER_RADIUS,
+    borderRadius:
+      (BTN_SIZE - BTN_BORDER_RADIUS * BTN_RING_SIZE) / BTN_BORDER_RADIUS,
     backgroundColor: "#000",
     padding: BTN_BLACK_SIZE,
   },
   center: {
     flex: 1,
-    borderRadius: (BTN_SIZE - BTN_BORDER_RADIUS * (BTN_RING_SIZE + BTN_BLACK_SIZE)) / BTN_BORDER_RADIUS,
+    borderRadius:
+      (BTN_SIZE - BTN_BORDER_RADIUS * (BTN_RING_SIZE + BTN_BLACK_SIZE)) /
+      BTN_BORDER_RADIUS,
     backgroundColor: "#fff",
   },
 
@@ -559,7 +996,127 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.3)",
     backgroundColor: "rgba(0, 0, 0, 0.27)", // 50% transparent green background
   },
+
+  // Loading Bar Styles
+  loadingWrap: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 120,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 999,
+  },
+  loadingTxt: {
+    color: "#fff",
+    marginBottom: 8,
+    fontWeight: "600",
+    fontSize: 16,
+  },
+  loadingBarBg: {
+    width: "70%",
+    height: 8,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    overflow: "hidden",
+  },
+  barFill: {
+    height: 8,
+    backgroundColor: "#3b82f6",
+  },
+  detectionsWrap: {
+    paddingBottom: 32,
+  },
+  title: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 18,
+    marginBottom: 16,
+    textAlign: "center",
+    letterSpacing: 0.5,
+  },
+  itemCard: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  itemTextWrap: {
+    flex: 1,
+    marginRight: 10,
+  },
+  itemLabel: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  itemTranslation: {
+    color: "#bbb",
+    fontSize: 13,
+    marginTop: 2,
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  listenText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  descRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  descChip: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  descChipText: {
+    color: "#ddd",
+    fontSize: 12,
+    fontStyle: "italic",
+  },
+  ttsButton: {
+    backgroundColor: "#3b82f6",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 40, // valgfritt
+    minHeight: 36,
+  },
+  btnContainer: {
+    borderRadius: 8,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+  },
+  blueBg: {
+    backgroundColor: "#3b82f6", // base blå
+    borderRadius: 8,
+  },
+  whiteBg: {
+    backgroundColor: "#fff", // base blå
+    borderRadius: 8,
+  },
   
+
 });
 
 const langStyles = StyleSheet.create({
@@ -591,4 +1148,3 @@ const langStyles = StyleSheet.create({
   item: { paddingHorizontal: 12, paddingVertical: 10 },
   itemTxt: { color: "#fff", fontSize: 16 },
 });
-
