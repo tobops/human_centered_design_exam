@@ -1,846 +1,1150 @@
-// @ts-nocheck
-import React, { useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, StyleSheet, Dimensions, Animated, Platform, Image, Modal, TextInput, ScrollView, ActivityIndicator, Alert } from "react-native";
-import { CameraView, useCameraPermissions } from "expo-camera";
-import * as ImageManipulator from "expo-image-manipulator";
-import Svg, { Rect } from "react-native-svg";
+// First Step:
+// 1. Show Live Camera ===FINISHED===
+// 2. Take picture with a button ===FINISHED===
+// 3. Show image on screen ===FINISHED===
+// 4. Return to camera by pressing the "X" ===FINISHED===
 
-let Audio: any = null;                 // 👈 lazy
-if (Platform.OS !== "web") {
-  // @ts-ignore
-  Audio = require("expo-av").Audio;
+// Second Step:
+// 1. Make item recognition and print in log ===FINISHED===
+// 2. Add a button to choose from different languages: ===FINISHED===
+// English, Spanish, Polish, italian ===FINISHED===
+// 3. Choose which language to log. output: (norwegian word, chosen language word) ===FINISHED===
+// 4. Add accurate boxes around objects and show them with norwegian label.
+
+// Third Step:
+// 1. Add a modal that user can drag up to see
+// 2. Show both the norwegian word and translated word
+// 3. Add a "read text" speech button. (button, norwegian word, translated word)
+
+// Fourth Step:
+// 1. Add "Task" button on the right of each word
+// 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject)
+// 3. Add correct assesment to answer with score from 1-6 and explanation
+// 4. Make a button to make task with two or more items in image
+
+/* #######################################  IMPORTS  ####################################### */
+import ModalSheet from "../../components/ui/ModalSheet";
+import { initTTS, speakTTS } from "../../components/tts";
+
+import React, { useRef, useState, useEffect } from "react";
+import { CameraView, useCameraPermissions } from "expo-camera";
+import 'react-native-gesture-handler';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Animated,
+  Image,
+  Dimensions,
+  ScrollView,
+  ViewStyle,
+  StyleProp,
+  TextStyle
+} from "react-native";
+import * as ImageManipulator from "expo-image-manipulator";
+import { MaterialIcons } from "@expo/vector-icons";
+import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
+import Svg, { Rect, Path, Text as SvgText } from "react-native-svg";
+
+/* #######################################  CONSTRAINTS / CONFIG  ####################################### */
+
+const CAMERA_QUALITY = 0.7;
+const MAX_SIDE = 640;
+
+const MODEL = "gpt-4o-mini"; // What GPT model to use for image detection
+const OPENAI_URL = "https://api.openai.com/v1/responses";
+
+const LANGUAGES = [
+  { label: "English", code: "en" },
+  { label: "Spanish", code: "es" },
+  { label: "Polish", code: "pl" },
+  { label: "Italian", code: "it" },
+  { label: "French", code: "fr" },
+  { label: "German", code: "de" },
+];
+
+function flagFor(code: string) {
+  // Simple Emoji for flag
+  const map: Record<string, string> = {
+    en: "🇬🇧",
+    es: "🇪🇸",
+    pl: "🇵🇱",
+    it: "🇮🇹",
+    fr: "🇫🇷",
+    de: "🇩🇪",
+  };
+  return map[code] ?? "🏳️";
 }
 
-// ❌ fjernet: import translate from '@vitalets/google-translate-api';
+const BUBBLE = {
+  font: 12, // tekststørrelse
+  padX: 15, // horisontal padding
+  padY: 6, // vertikal padding
+  minW: 70, // min bredde
+  maxW: 240, // maks bredde
+  radius: 8, // hjørner
+  tip: 12, // lengde på spiss
+  stroke: "#3b82f6",
+  strokeW: 3,
+};
 
-const MODEL = "gpt-4.1-mini";        // evt "o4-mini" (tregere)
-const MAX_SIDE = 768;                 
-const JPEG_QUALITY = 0.85;
 
-const PROMPT = `
-Returner KUN gyldig JSON med nøyaktig dette skjemaet:
-{"detections":[{"label_no":"klokke","confidence":0.97,"box_norm":{"xc":0.5000,"yc":0.5000,"w":0.3000,"h":0.4000}}]}
+/* #######################################  COMPONENT  ####################################### */
 
-OPPGAVE
-Analyser ett bilde og returner opptil fem objekter med presise bounding boxes og korte norske labels.
-
-OUTPUTREGLER
-- Kun JSON. Ingen forklaringer, ingen trailing komma.
-- Felt:
-  - label_no: kort norsk ord (maks to), spesifikt fremfor generelt.
-  - confidence: [0,1], 2 desimaler.
-  - box_norm: xc,yc,w,h ∈ [0,1], 4 desimaler, relativt til hele bildet.
-- Sortér detections synkende på confidence.
-- Returner {"detections":[]} hvis ingen sikre funn.
-
-UNIVERSELLE PRINSIPPER ...
-(… alt videre som du hadde …)
-`;
-
-const { width: SW, height: SH } = Dimensions.get("window");
-
+// Main Function
 export default function Screen() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView>(null);
+  /* ----------  REFERENCES  ---------- */
 
-  const [facing, setFacing] = useState<"front"|"back">("front");
-  const [busy, setBusy] = useState(false);
+  const [detections, setDetections] = useState<
+    Array<{
+      label_NO: string;
+      label_TRANS: string;
+      confidence: number;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      cx: number;
+      cy: number;
+    }>
+  >([]);
 
-  // Preview state
-  const [previewUri, setPreviewUri] = useState<string | null>(null);
-  const [imgW, setImgW] = useState(0);
-  const [imgH, setImgH] = useState(0);
-  const [boxes, setBoxes] = useState<any[]>([]);
-  const flashAnim = useRef(new Animated.Value(0)).current;
+  // AI Image Size
+  const [aiSize, setAiSize] = useState<{ w: number; h: number } | null>(null);
+
+  // Flash Effect
+  const flashAnim = useRef(new Animated.Value(0)).current; // Animation for flash effect, returns: value from 0 to 1
 
   // Loading bar
-  const [loading, setLoading] = useState(false);
-  const prog = useRef(new Animated.Value(0)).current;
+  const [loading, setLoading] = useState(false); // Loading state for the loading bar (true/false)
+  const prog = useRef(new Animated.Value(0)).current; // number from 0 to 1 for progress bar animation (0 empty, 1 full)
+  const SW = Dimensions.get("window").width; // Screen Width
+  const barW = prog.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, SW * 0.6],
+  }); // Width of loading bar based on prog value
 
-  // Oversettelse state
-  const [barExpanded, setBarExpanded] = useState(false);
-  const [predictionsWithEn, setPredictionsWithEn] = useState<any[]>([]);
+  const [busy, setBusy] = useState(false); // Busy State (true/false)
 
-  // 🔵 NEW: Task modal state
-  const [taskOpen, setTaskOpen] = useState(false);
-  const [taskWord, setTaskWord] = useState<{no:string,en:string}|null>(null);
-  const [taskTab, setTaskTab] = useState<"menu"|"write"|"speak"|"answer">("menu");
+  const [permission, requestPermission] = useCameraPermissions(); // Camera Access
+  const cameraRef = useRef<CameraView>(null); // "remote" to camera
 
-  // 🔵 NEW: Exercises & evaluation state
-  const [exercises, setExercises] = useState<{write:string[], speak:string[], answer:string[]}>({write:[], speak:[], answer:[]});
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [userText, setUserText] = useState("");
-  const [rating, setRating] = useState<{score:number,reason:string}|null>(null);
-  const [genBusy, setGenBusy] = useState(false);
-  const [evalBusy, setEvalBusy] = useState(false);
+  // Preview State
+  const [previewUri, setPreviewUri] = useState<string | null>(null); // Saves URI of the captured image
 
-  // 🔵 NEW: Audio record state
-  const [recording, setRecording] = useState<Audio.Recording|null>(null);
-  const [micGranted, setMicGranted] = useState<boolean | null>(null);
+  // Modal State
+  const [modalOpen, setModalOpen] = useState(false);
 
-  useEffect(() => { if (!permission?.granted) requestPermission(); }, [permission]);
+  //Button Click Animation
+  const buttonAnim = useRef(new Animated.Value(1)).current;
 
-  const ensureMic = async () => {
-    if (!Audio) {
-      Alert.alert("Ikke støttet", "Taleopptak er ikke tilgjengelig på denne plattformen.");
-      return;
-    }
-    const { status } = await Audio.requestPermissionsAsync();
-    setMicGranted(status === "granted");
-    return status === "granted";
+  // Language chosen (use setTargetLang("language_code") to change language)
+  const [targetLang, setTargetLang] = useState("en");
+
+  useEffect(() => { initTTS(); }, []);
+
+  const [canScroll, setCanScroll] = React.useState(false);
+
+  const handleProgress = (p: number) => {
+    setCanScroll(p < 0.2); //0: full open, 1: peek
   };
 
+  // DEBUGGING
+  const startTimeRef = useRef<number | null>(null); // Stopwatch
+
+  /* ----------  HELPER FUNCTIONS  ---------- */
+
+  const logWithTime = (msg: string) => {
+    const now = Date.now();
+    if (startTimeRef.current === null) {
+      startTimeRef.current = now;
+    }
+    const elapsed = ((now - startTimeRef.current) / 1000).toFixed(3); //seconds
+    console.log(`[+${elapsed}s] ${msg}`);
+  };
+
+  // Flash
   const flash = () => {
     flashAnim.setValue(1);
-    Animated.timing(flashAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start();
+    Animated.timing(flashAnim, {
+      toValue: 0,
+      duration: 150,
+      useNativeDriver: true,
+    }).start(); //Fade out (duration 150ms)
   };
 
-  const onFlip = () => setFacing(f => (f === "front" ? "back" : "front"));
 
+  // Loading bar animations
   const startProgress = () => {
-    setLoading(true);
-    prog.setValue(0);
+    // Start loading bar animation
+    setLoading(true); // Set loading state to true
+    prog.setValue(0); // Reset progress to 0
     Animated.loop(
+      // Loop the animation from here
       Animated.sequence([
-        Animated.timing(prog, { toValue: 0.7, duration: 900, useNativeDriver: false }),
-        Animated.timing(prog, { toValue: 1.0, duration: 500, useNativeDriver: false }),
+        // Sequence of animations
+        Animated.timing(prog, {
+          toValue: 0.7,
+          duration: 900,
+          useNativeDriver: false,
+        }), // Animate from 0% to 70% in 900ms
+        Animated.timing(prog, {
+          toValue: 1.0,
+          duration: 500,
+          useNativeDriver: false,
+        }), // Animate from 70% to 100% in 500ms
       ])
-    ).start();
+    ).start(); // Start the animation loop
   };
   const stopProgress = () => {
-    Animated.timing(prog, { toValue: 1, duration: 120, useNativeDriver: false }).start(() => {
-      setLoading(false);
-      prog.setValue(0);
+    // Stop loading bar animation
+    Animated.timing(prog, {
+      toValue: 1,
+      duration: 120,
+      useNativeDriver: false,
+    }).start(() => {
+      // Animate from current value to 100% in 120ms
+      setLoading(false); // Set loading state to false
+      prog.setValue(0); // Reset progress to 0
     });
   };
 
-  const takeAndPredict = async () => {
-    if (!cameraRef.current || busy) return;
-    try {
-      setBusy(true);
+  type TTSButtonProps = {
+    onPress: () => void;
 
-      // 1) foto
+    // Show MaterialIcon?
+    showIcon?: bool;
+    // MaterialIcon Name?
+    iconName?: keyof typeof MaterialIcons.glyphMap | string;
+    iconSize?: number;
+    iconColor?: string;
+
+    // Show Text Label? (ignored if passed children)
+    showText?: boolean;
+    text?: string;
+    textStyle?: StyleProp<TextStyle>;
+
+    // Optional Style for the outer Button
+    style?: StyleProp<ViewStyle>;
+
+    // Optional custom content; if provided ovverrides ShowIcon/Showtext
+    children?: React.ReactNode;
+  };
+
+  function TTSButton({
+    onPress,
+    showIcon = false,
+    iconName = "multitrack-audio",
+    iconSize = 20,
+    iconColor = "#fff",
+    showText = false,
+    text = "",
+    textStyle,
+    style,
+    children,
+  }: TTSButtonProps) {
+    const scale = useRef(new Animated.Value(1)).current;
+
+    const onPressIn = () => {
+      Animated.spring(scale, {
+        toValue: 1.06, // Little Bigger
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 6,
+      }).start();
+    };
+
+    const onPressOut = () => {
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 6,
+      }).start();
+    };
+    return (
+      <Animated.View style={{ transform: [{ scale }] }}>
+        <Pressable
+          onPressIn={onPressIn}
+          onPressOut={onPressOut}
+          onPress={onPress}
+          style={[
+            {
+
+            },
+            style,
+          ]}
+          >
+            {children ? (
+              children
+            ) : (
+              <>
+                {showIcon && (
+                  <MaterialIcons name={iconName as any} size={iconSize} color={iconColor} />
+                )}
+                {showText && !!text && <Text style={[{ color: "#fff", fontWeight: "600" }, textStyle]}>{text}</Text>}
+              </>
+            )}
+          </Pressable>
+        </Animated.View>
+      );
+    }
+
+  const handleCapture = async () => {
+    console.log("Camera Capture Pressed");
+    if (!cameraRef.current || busy) return; // Return if camera is not ready or busy
+    try {
+      logWithTime("Started Handling Capture");
+      setBusy(true); // Set State to busy
+
+      // Wait for image to process without lagging
       const photo = await cameraRef.current.takePictureAsync({
         skipProcessing: true,
-        quality: JPEG_QUALITY,
+        quality: CAMERA_QUALITY,
         base64: true,
       });
+      
+      // Resize Image
+      logWithTime("Resizing..");
+      const photo_resized = await resizeToMaxSide(
+        photo.uri,
+        MAX_SIDE,
+        CAMERA_QUALITY
+      );
+      logWithTime("Finished Resizing");
+      setPreviewUri(photo.uri!);
+      logWithTime("Preview Set");
 
-      // 3) resize
-      const r = await resizeToMaxSide(photo, MAX_SIDE, JPEG_QUALITY);
+      // Flash Effect
+      flash();
+      startProgress(); // Start flash and loading bar
 
-      // 4) vis freeze med loading
-      setPreviewUri(r.uri);
-      setImgW(r.w); setImgH(r.h);
-      setBoxes([]);
-      flash(); startProgress();
+      setAiSize({ w: photo_resized.width!, h: photo_resized.height! }); // Set AI image size for SVG
 
-      // 5) kall OpenAI med timeout
-      const dets = await callOpenAIWithTimeout(r.b64, MODEL, 15000); // 15s cut
-      const px = detectionsToPixels(dets, r.w, r.h);
-      setBoxes(px);
-    } catch (e) {
-      console.warn("predict failed", e);
+      // Send to OpenAI for Object Detection
+      logWithTime("Started Object Detection");
+      try {
+        const label = getLanguageLabelByCode(targetLang);
+        const prompt = buildVisionPrompt(
+          photo_resized.width!,
+          photo_resized.height!,
+          label
+        );
+        logWithTime("Prompt Built");
+        const aiText = await callOpenAIWithTimeout(
+          photo_resized.base64!,
+          prompt,
+          25000
+        );
+        logWithTime("OpenAI Response Received");
+        console.log("AI RAW:", aiText); // Debug: show raw AI output
+
+        // Parse AI Output and convert to pixel boxes
+        const parsed = JSON.parse(aiText);
+        const objs = Array.isArray(parsed?.objects) ? parsed.objects : [];
+
+        const px = objs
+          .map((o: any) => {
+            const bn = o?.box_norm || {};
+            const clamp = (v: number, a: number, b: number) =>
+              Math.min(Math.max(+v, a), b);
+            const xc = clamp(bn.xc, 0, 1),
+              yc = clamp(bn.yc, 0, 1),
+              w = clamp(bn.w, 0, 1),
+              h = clamp(bn.h, 0, 1);
+            const x1 = Math.max(
+              0,
+              Math.min(
+                Math.round((xc - w / 2) * photo_resized.width!),
+                photo_resized.width! - 1
+              )
+            );
+            const y1 = Math.max(
+              0,
+              Math.min(
+                Math.round((yc - h / 2) * photo_resized.height!),
+                photo_resized.height! - 1
+              )
+            );
+            const x2 = Math.max(
+              0,
+              Math.min(
+                Math.round((xc + w / 2) * photo_resized.width!),
+                photo_resized.width! - 1
+              )
+            );
+            const y2 = Math.max(
+              0,
+              Math.min(
+                Math.round((yc + h / 2) * photo_resized.height!),
+                photo_resized.height! - 1
+              )
+            );
+            const cx = Math.round((x1 + x2) / 2);
+            const cy = Math.round((y1 + y2) / 2);
+            return {
+              label_NO: String(o.label_NO || ""),
+              label_TRANS: String(o.label_TRANS || ""),
+              desc_NO: String(o.desc_NO || ""),
+              desc_TRANS: String(o.desc_TRANS || ""),
+              confidence: Number(o.confidence || 0),
+              x1,
+              y1,
+              x2,
+              y2,
+              cx,
+              cy,
+            };
+          })
+          .filter((d: any) => d.x2 > d.x1 && d.y2 > d.y1);
+
+        setDetections(px);
+        logWithTime(`DETECTIONS = ${px.length} objects detected`); // Log number of detections
+
+        setModalOpen(true); // Open modal with vocabulary
+
+        logWithTime("Finished Object Detection");
+      } catch (err: any) {
+        console.error("Error during AI processing:", err);
+        setDetections([]); // Empty detections on error
+        stopProgress(); // Stop loading bar on error
+      }
+    } catch (err: any) {
+      console.error("Error during capture:", err);
     } finally {
-      stopProgress();
       setBusy(false);
+      stopProgress(); // Stop loading bar
+      logWithTime("Finished Handling Capture");
+      startTimeRef.current = null; // Reset stopwatch
     }
   };
 
-  const closePreview = () => { setPreviewUri(null); setBoxes([]); };
+  /* ----------  MAIN LOGIC  ---------- */
 
-  // -------------------
-  // Oversett labels til engelsk via OpenAI (RN-kompatibel)
-  const translationCache = useRef(new Map()).current;
-  async function translateToEnglish(norsk: string) {
-    if (!norsk) return norsk;
-    const cached = translationCache.get(norsk);
-    if (cached) return cached;
-
-    const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-    if (!key) {
-      console.warn("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
-      return norsk;
-    }
-
-    const body = {
-      model: "gpt-4o-mini",
-      input: `Oversett det norske ordet "${norsk}" til engelsk. Gi bare det korteste og mest vanlige oversettelsesordet. Ikke fantasér. Svar med ett ord.`,
-      temperature: 0,
-      max_output_tokens: 32, // >=16
-    };
-    try {
-      const rsp = await fetch("https://api.openai.com/v1/responses", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-        body: JSON.stringify(body),
-      });
-      if (!rsp.ok) {
-        console.warn("Translate failed:", rsp.status, await rsp.text());
-        return norsk;
-      }
-      const json = await rsp.json();
-      const out = getOutputText(json) || (json?.output_text ?? "");
-      const en = (out || norsk).trim();
-      translationCache.set(norsk, en);
-      return en;
-    } catch (err) {
-      console.warn("Translate error:", err);
-      return norsk;
-    }
-  }
-  // -------------------
-
-  // Oppdater oversettelser når boxes endres
-  useEffect(() => {
-    async function updateTranslations() {
-      if (boxes.length === 0) {
-        setPredictionsWithEn([]);
-        return;
-      }
-      const arr = await Promise.all(
-        boxes.map(async b => ({
-          ...b,
-          en: await translateToEnglish(b.label)
-        }))
-      );
-      setPredictionsWithEn(arr);
-    }
-    updateTranslations();
-  }, [boxes]);
-
-  if (!permission) return <Center><Text>Ber om kameratilgang…</Text></Center>;
-  if (!permission.granted) {
+  // 1. Before knowing the permission
+  if (!permission) {
+    // if not-permission
     return (
       <Center>
-        <Text style={{ color:"#fff", marginBottom:10 }}>Tilgang kreves for kamera</Text>
-        <Pressable style={styles.btn} onPress={requestPermission}><Text style={styles.btnTxt}>Tillat</Text></Pressable>
+        <Text>Asking For Camera Permission...</Text>
       </Center>
     );
   }
 
-  // scale bokser til skjerm (contain)
-  const fit = fitContainScale({ srcW: imgW, srcH: imgH, dstW: SW, dstH: SH });
-  const scaled = boxes.map(b => ({
-    ...b,
-    x1: Math.round(b.x1 * fit.sx + fit.dx),
-    y1: Math.max(0, Math.round(b.y1 * fit.sy + fit.dy)),
-    x2: Math.round(b.x2 * fit.sx + fit.dx),
-    y2: Math.round(b.y2 * fit.sy + fit.dy),
-  }));
+  // 2. No Camera Permission: Show "Ask for Permission" button
+  if (!permission.granted) {
+    return (
+      console.log("Return = Permission"),
+      (
+        <Center>
+          <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
+          <Pressable style={styles.btn} onPress={requestPermission}>
+            <Text style={styles.btnTxt}>Give access</Text>
+          </Pressable>
+        </Center>
+      )
+    );
+  }
 
-  const barW = prog.interpolate({ inputRange: [0, 1], outputRange: [0, SW * 0.6] });
+  // 3. If there exist a preview, show it. (runs after taking picture)
+  if (previewUri) {
+    return (
+      console.log("Return = Preview"),
+      (
+        <View style={StyleSheet.absoluteFill}>
+          {/* Image Preview */}
+          <Image
+            source={{ uri: previewUri }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="contain"
+          />
+          {/* Detection Bubbles (center of each detection box) */}
+          {aiSize && detections.length > 0 && (
+            <Svg
+              style={StyleSheet.absoluteFill}
+              viewBox={`0 0 ${aiSize.w} ${aiSize.h}`}
+            >
+              {detections.map((det, i) => {
+                const { w, h } = sizeBubble(det.label_NO); // Calculate bubble size based on label
+                const bx = det.cx - w / 2; // bubble x (centered)
+                const above = det.cy > h + BUBBLE.tip + 6; // place bubble above if enough space
+                const by = above
+                  ? det.cy - (h + BUBBLE.tip)
+                  : det.cy + BUBBLE.tip; // bubble y (above or below)
+                const tipPath = above
+                  ? `M ${det.cx - 10} ${by + h} L ${det.cx} ${det.cy} L ${
+                      det.cx + 10
+                    } ${by + h} Z`
+                  : `M ${det.cx - 10} ${by} L ${det.cx} ${det.cy} L ${
+                      det.cx + 10
+                    } ${by} Z`;
 
-  // ---------- UI ----------
-  return (
-    <View style={styles.root}>
-      {/* fullskjerm kamera */}
-      <CameraView
-        ref={cameraRef}
-        style={[StyleSheet.absoluteFill, { transform: [{ scaleX: facing === "front" ? 1 : 1 }] }]} // speil? bytt til -1
-        facing={facing}
-      />
+                return (
+                  <React.Fragment key={i}>
+                    {/* debug rectangle around the object, comment in if needed */}
+                    {/* <Rect x={det.x1} y={det.y1} width={det.x2-det.x1} height={det.y2-det.y1} stroke="#ff0" strokeWidth={2} fill="transparent" /> */}
 
-      {/* frozen preview + overlay */}
-      {previewUri && (
-        <>
-          <Image source={{ uri: previewUri }} resizeMode="contain" style={StyleSheet.absoluteFill} />
-          <Svg width={SW} height={SH} style={StyleSheet.absoluteFill}>
-            {scaled.map((b, i) => (
-              <Rect key={i} x={b.x1} y={b.y1}
-                width={Math.max(1, b.x2 - b.x1)} height={Math.max(1, b.y2 - b.y1)}
-                stroke="yellow" strokeWidth={3} fill="transparent"
-              />
-            ))}
-          </Svg>
-          {scaled.map((b, i) => (
-            <View key={`t${i}`} style={[styles.tag, { left: b.x1, top: Math.max(0, b.y1 - 24) }]}>
-              {/* fortsatt norsk på overlay; kan bytte til b.en hvis ønsket */}
-              <Text style={styles.tagTxt}>{b.label}</Text>
-            </View>
-          ))}
+                    {/* Bubble */}
+                    <Rect
+                      x={bx}
+                      y={by}
+                      width={w}
+                      height={h}
+                      rx={BUBBLE.radius}
+                      ry={BUBBLE.radius}
+                      fill="#fff"
+                      stroke={BUBBLE.stroke}
+                      strokeWidth={BUBBLE.strokeW}
+                    />
+                    {/* Tip */}
+                    <Path
+                      d={tipPath}
+                      fill="#fff"
+                      stroke={BUBBLE.stroke}
+                      strokeWidth={BUBBLE.strokeW}
+                    />
+                    {/* Text */}
+                    <SvgText
+                      x={det.cx}
+                      y={by + h / 2 + BUBBLE.font * 0.35}
+                      fontSize={BUBBLE.font}
+                      fontWeight="600"
+                      fill={BUBBLE.stroke}
+                      textAnchor="middle"
+                    >
+                      {det.label_NO.toUpperCase()}
+                    </SvgText>
+                  </React.Fragment>
+                );
+              })}
+            </Svg>
+          )}
 
-          {/* loading overlay */}
+          {/* Close Button */}
+          <Pressable
+            style={styles.btnExitPreview}
+            onPress={() => {
+              setPreviewUri(null);
+              setDetections([]); // Empty Detection bubble
+              setModalOpen(false);
+            }}
+          >
+            <MaterialIcons name="close" size={32} color="#fff" />
+          </Pressable>
+
+          {/* flash */}
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.flash, { opacity: flashAnim }]}
+          />
+
+          {/* Loading Bar */}
           {loading && (
             <View style={styles.loadingWrap}>
-              <Text style={styles.loadingTxt}>Analyserer…</Text>
-              <View style={styles.barBg}>
+              <Text style={styles.loadingTxt}>Processing...</Text>
+              <View style={styles.loadingBarBg}>
                 <Animated.View style={[styles.barFill, { width: barW }]} />
               </View>
             </View>
           )}
+          {/* ========================== MODAL SHEET ========================== */}
+          <ModalSheet
+            // Controls whether the modal is open or not
+            open={modalOpen}
+            // Called whenever modal is dragged up or down
+            onChange={setModalOpen}
+            // How much of the modal is visible in its "peek" position (10%)
+            peekRatio={0.12}
+            // How far you must drag up before it snaps fully open (30%)
+            snapUpThreshold={0.3}
+            // How far you must drag down before it snaps closed (30%)
+            snapDownThreshold={0.3}
+            // Disable full close (modal always stays visible at least in peek state)
+            canClose={false}
+            onProgress={handleProgress}
+          >
+            {/* ==================== SCROLLABLE CONTENT AREA ==================== */}
+            <ScrollView
+              // Allow vertical scrolling when there are many detected items
+              style={{ flex: 1 }}
+              // Add internal padding to prevent content from sticking to edges
+              contentContainerStyle={{
+                paddingTop: 10,
+                paddingBottom: 300, // extra space at bottom so last card isn't cut off
+              }}
+              // Hide default iOS/Android scrollbar for a cleaner look
+              showsVerticalScrollIndicator={false}
+              scrollEnabled={canScroll}
+            >
+              {/* ==================== WRAPPER FOR DETECTION CARDS ==================== */}
+              <View style={styles.detectionsWrap}>
+                {/* Title shown at the top of the modal */}
+                <Text style={styles.title}>Items Detected</Text>
 
-          {/* lukk */}
-          <Pressable onPress={closePreview} style={styles.closeBtn}>
-            <Text style={styles.closeTxt}>✕</Text>
-          </Pressable>
-        </>
-      )}
+                {/* Map over all AI detections and render one card per object */}
+                {detections.map((det, i) => (
+                  <View key={i} style={styles.itemCard}>
+                    {/* ==================== MAIN ROW: WORDS + BUTTONS ==================== */}
+                    <View style={styles.itemRow}>
+                      {/* LEFT SIDE: detected object in Norwegian + translated word */}
+                      <View style={styles.itemTextWrap}>
+                        <Text style={styles.itemLabel}>
+                          {det.label_NO.charAt(0).toUpperCase() + det.label_NO.slice(1)}
+                        </Text>
+                        <Text style={styles.itemTranslation}>
+                          {det.label_TRANS.charAt(0).toUpperCase() + det.label_TRANS.slice(1)}
+                        </Text>
+                      </View>
 
-      {/* flip (bare i live) */}
-      {!previewUri && (
-        <Pressable onPress={onFlip} style={styles.flipBtn}>
-          <Text style={styles.flipTxt}>{facing === "front" ? "Front" : "Back"}</Text>
-        </Pressable>
-      )}
+                      {/* RIGHT SIDE: action buttons for TTS and Task */}
+                      <View style={styles.buttonRow}>
+                        {/* Text-to-speech (plays the Norwegian label) */}
+                        <TTSButton
+                          onPress={() => speakTTS(det.label_NO)}
+                          showIcon={true}
+                          iconName="multitrack-audio"
+                          style={styles.ttsButton}
+                        />
+                        {/* Future Task button (can open exercises or extra info) */}
+                        <TTSButton
+                          onPress={() => speakTTS("Ikke Tilgjengelig enda")}
+                          showIcon={true}
+                          iconName="tasks"
+                          style={styles.ttsButton}
+                          />
+                      </View>
+                    </View>
 
-      {/* snapshot */}
-      <Pressable style={[styles.snapBtn, busy && { opacity: 0.6 }]} onPress={takeAndPredict} disabled={busy}>
-        <View style={styles.snapInner} />
-      </Pressable>
+                    {/* ==================== FOOTER ROW: DESCRIPTIONS ==================== */}
+                    <View style={styles.descRow}>
+                      {/* Left chip: short Norwegian description of object position */}
+                      <View style={styles.descChip}>
+                        <TTSButton
+                          onPress={() => speakTTS(det.desc_NO)}
+                          showText
+                          text={`🇳🇴 ${det.desc_NO}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
+                          textStyle={styles.descChipText}
+                        />
+                      </View>
 
-      {/* flash */}
-      <Animated.View pointerEvents="none" style={[styles.flash, { opacity: flashAnim }]} />
-
-      {/* Prediction bar */}
-      {predictionsWithEn.length > 0 && (
-        <Pressable
-          style={[
-            styles.predBar,
-            barExpanded ? styles.predBarExpanded : styles.predBarCollapsed
-          ]}
-          onPress={() => setBarExpanded(e => !e)}
-        >
-          <View style={styles.predList}>
-            {predictionsWithEn.map((b, i) => (
-              <View key={i} style={styles.predRow}>
-                <Text style={styles.predLabel}>{b.label}</Text>
-                <Text style={styles.predArrow}>→</Text>
-                <Text style={styles.predEn}>{b.en}</Text>
-
-                {/* 🟣 NEW: Task button (erstatter confidence) */}
-                <Pressable
-                  style={styles.taskBtn}
-                  onPress={async () => {
-                    setTaskWord({ no: b.label, en: b.en });
-                    setTaskTab("menu");
-                    setRating(null);
-                    setUserText("");
-                    setCurrentIndex(0);
-                    setExercises({write:[], speak:[], answer:[]});
-                    setTaskOpen(true);
-                    // pre-generate menu exercises for quick UX if you vil:
-                    setGenBusy(true);
-                    try {
-                      const ex = await generateExercisesForWord(b.label, b.en);
-                      setExercises(ex);
-                    } catch (e) {
-                      console.warn("generateExercisesForWord error", e);
-                      Alert.alert("Oops", "Klarte ikke lage oppgaver nå.");
-                    } finally {
-                      setGenBusy(false);
-                    }
-                  }}
-                >
-                  <Text style={styles.taskBtnTxt}>Task</Text>
-                </Pressable>
+                      {/* Right chip: translated description in chosen target language */}
+                      <View style={styles.descChip}>
+                        <TTSButton
+                          onPress={() => speakTTS(det.desc_TRANS)}
+                          showText
+                          text={`${flagFor(targetLang)} ${det.desc_TRANS}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
+                          textStyle={styles.descChipText}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                ))}
               </View>
-            ))}
-          </View>
-        </Pressable>
-      )}
-
-      {/* 🟣 NEW: Fullscreen Task Modal */}
-      <Modal visible={taskOpen} animationType="slide" transparent={false}>
-        <View style={styles.modalRoot}>
-          {/* Close X */}
-          <Pressable style={styles.modalClose} onPress={() => setTaskOpen(false)}>
-            <Text style={styles.closeTxt}>✕</Text>
-          </Pressable>
-
-          {/* Header */}
-          <View style={{ paddingTop: 50, paddingHorizontal: 20, paddingBottom: 10 }}>
-            <Text style={styles.modalTitle}>What exercises do you want to do with this word?</Text>
-            {taskWord && (
-              <Text style={styles.modalSub}>
-                Norsk: <Text style={{fontWeight:"700"}}>{taskWord.no}</Text>  •  English: <Text style={{fontWeight:"700"}}>{taskWord.en}</Text>
-              </Text>
-            )}
-          </View>
-
-          {taskTab === "menu" && (
-            <View style={{ padding: 20 }}>
-              {genBusy ? (
-                <View style={{alignItems:"center", marginTop:40}}>
-                  <ActivityIndicator />
-                  <Text style={{color:"#fff", marginTop:10}}>Lager tre oppgaver per kategori…</Text>
-                </View>
-              ) : (
-                <>
-                  <BigMenuButton label="Write a Norwegian sentence" onPress={() => { setTaskTab("write"); setCurrentIndex(0); setRating(null); setUserText(""); }} />
-                  <BigMenuButton label="Speak a Norwegian sentence" onPress={async () => {
-                    const ok = await ensureMic();
-                    if (!ok) { Alert.alert("Mikrofon", "Gi tilgang til mikrofon for å bruke tale."); return; }
-                    setTaskTab("speak"); setCurrentIndex(0); setRating(null); setUserText("");
-                  }} />
-                  <BigMenuButton label="Answer a question in Norwegian" onPress={() => { setTaskTab("answer"); setCurrentIndex(0); setRating(null); setUserText(""); }} />
-                </>
-              )}
-            </View>
-          )}
-
-          {taskTab !== "menu" && (
-            <ScrollView style={{ paddingHorizontal: 20 }} contentContainerStyle={{ paddingBottom: 40 }}>
-              <Text style={styles.exerciseHeader}>
-                {taskTab === "write" ? "Write a Norwegian sentence" :
-                 taskTab === "speak" ? "Speak a Norwegian sentence" :
-                 "Answer a question in Norwegian"}
-              </Text>
-
-              {/* Oppgavetekst */}
-              <Text style={styles.exercisePrompt}>
-                {getExercise(exercises, taskTab, currentIndex) ?? "—"}
-              </Text>
-
-              {/* INPUT: tekst eller tale */}
-              {taskTab === "speak" ? (
-                <View style={{ marginTop: 20, alignItems: "center" }}>
-                  <Pressable
-                    style={[styles.recordBtn, recording && {backgroundColor:"#400"}]}
-                    onPress={async () => {
-                      if (recording) {
-                        try {
-                          await recording.stopAndUnloadAsync();
-                        } catch {}
-                        const rec = recording;
-                        setRecording(null);
-                        const uri = rec.getURI();
-                        if (!uri) { Alert.alert("Opptak", "Fant ikke lydfil."); return; }
-                        // Transcribe
-                        setEvalBusy(true);
-                        try {
-                          const transcript = await transcribeAudioWithOpenAI(uri);
-                          setUserText(transcript || "");
-                        } catch (e) {
-                          console.warn("transcribe error", e);
-                          Alert.alert("Transkripsjon feilet", "Prøv igjen.");
-                        } finally {
-                          setEvalBusy(false);
-                        }
-                      } else {
-                        try {
-                          await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-                          const rec = new Audio.Recording();
-                          await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-                          await rec.startAsync();
-                          setRecording(rec);
-                        } catch (e) {
-                          console.warn("record start error", e);
-                          Alert.alert("Opptak feilet", "Kunne ikke starte opptak.");
-                        }
-                      }
-                    }}
-                  >
-                    <Text style={styles.recordBtnTxt}>{recording ? "Stop & Transcribe" : "Start Recording"}</Text>
-                  </Pressable>
-
-                  <Text style={{ color:"#ccc", marginTop: 12, textAlign:"center" }}>
-                    {userText ? `Transkripsjon: “${userText}”` : (recording ? "Opptak pågår…" : "Ingen transkripsjon ennå")}
-                  </Text>
-                </View>
-              ) : (
-                <>
-                  <TextInput
-                    value={userText}
-                    onChangeText={setUserText}
-                    placeholder="Skriv svaret ditt på norsk…"
-                    placeholderTextColor="#888"
-                    style={styles.input}
-                    multiline
-                  />
-                </>
-              )}
-
-              {/* Vurdering */}
-              <View style={{ marginTop: 16, flexDirection:"row", gap:12 }}>
-                <Pressable
-                  style={styles.checkBtn}
-                  onPress={async () => {
-                    if (!taskWord) return;
-                    const prompt = getExercise(exercises, taskTab, currentIndex) ?? "";
-                    const answer = userText.trim();
-                    if (!answer) { Alert.alert("Svar", "Skriv eller snakk et svar først."); return; }
-                    setEvalBusy(true);
-                    try {
-                      const res = await rateAnswerWithOpenAI(taskWord.no, prompt, answer);
-                      setRating(res);
-                    } catch (e) {
-                      console.warn("rate error", e);
-                      Alert.alert("Vurdering feilet", "Prøv igjen.");
-                    } finally {
-                      setEvalBusy(false);
-                    }
-                  }}
-                >
-                  <Text style={styles.checkBtnTxt}>Check</Text>
-                </Pressable>
-
-                <Pressable
-                  style={styles.nextBtn}
-                  onPress={() => {
-                    setCurrentIndex(i => Math.min(2, i + 1));
-                    setUserText("");
-                    setRating(null);
-                  }}
-                >
-                  <Text style={styles.nextBtnTxt}>Next</Text>
-                </Pressable>
-
-                <Pressable style={styles.backBtn} onPress={() => setTaskTab("menu")}>
-                  <Text style={styles.backBtnTxt}>Back</Text>
-                </Pressable>
-              </View>
-
-              {evalBusy && (
-                <View style={{ marginTop: 16, flexDirection:"row", alignItems:"center", gap:10 }}>
-                  <ActivityIndicator />
-                  <Text style={{ color:"#fff" }}>Vurderer svaret…</Text>
-                </View>
-              )}
-
-              {rating && (
-                <View style={styles.ratingCard}>
-                  <Text style={styles.ratingScore}>Score: {rating.score}/6</Text>
-                  <Text style={styles.ratingReason}>{rating.reason}</Text>
-                </View>
-              )}
             </ScrollView>
-          )}
+          </ModalSheet>
+
+
         </View>
-      </Modal>
+      )
+    );
+  }
+
+  // 4. Given Camera Permission: Show live camera (back)
+  console.log("Returned = Screen  |  Language = ", targetLang);
+  return (
+    <View style={styles.root}>
+      <CameraView
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        facing="back"
+        zoom={0.001}
+      />
+      {/* språkmeny + capture */}
+      <ChangeLanguageButton
+        languages={LANGUAGES}
+        selected={targetLang}
+        onSelect={setTargetLang}
+      />
+      <CaptureButton onPress={handleCapture} />
     </View>
   );
 }
 
-/* ---------- helpers ---------- */
+/* #######################################  SUB-COMPONENTS  ####################################### */
 
-async function resizeToMaxSide(photo, maxSide, quality) {
-  const meta = await ImageManipulator.manipulateAsync(photo.uri, [], { compress: 1, base64: false });
-  const W = meta.width, H = meta.height;
-  const s = Math.min(1, maxSide / Math.max(W, H));
-  if (s < 1) {
-    const out = await ImageManipulator.manipulateAsync(
-      photo.uri,
-      [{ resize: { width: Math.round(W * s), height: Math.round(H * s) } }],
-      { compress: quality, base64: true }
-    );
-    return { uri: out.uri, w: out.width, h: out.height, b64: out.base64 };
-  }
-  if (photo.base64) return { uri: photo.uri, w: W, h: H, b64: photo.base64 };
-  const out = await ImageManipulator.manipulateAsync(photo.uri, [], { compress: quality, base64: true });
-  return { uri: out.uri, w: W, h: H, b64: out.base64 };
-}
-
-async function callOpenAIWithTimeout(b64, model, ms) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try { return await callOpenAI(b64, model, ctrl.signal); }
-  finally { clearTimeout(t); }
-}
-
-async function callOpenAI(b64, model, signal) {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
-
-  const body = {
-    model,
-    temperature: 0.5,
-    max_output_tokens: 300,
-    input: [{
-      role: "user",
-      content: [
-        { type: "input_text", text: PROMPT },
-        { type: "input_image", image_url: `data:image/jpeg;base64,${b64}`, detail: "high" },
-      ],
-    }],
-  };
-
-  const rsp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  if (!rsp.ok) throw new Error(`OpenAI ${rsp.status}: ${await rsp.text()}`);
-  const json = await rsp.json();
-  const raw = getOutputText(json) || "";
-  return parseDetections(raw);
-}
-
-function getOutputText(rspJson) {
-  if (typeof rspJson.output_text === "string") return rspJson.output_text;
-  try {
-    const c = rspJson.output?.[0]?.content;
-    const p = Array.isArray(c) ? c.find(x => x.type === "output_text" || x.type === "text") : null;
-    return p?.text || p?.output_text || "";
-  } catch { return ""; }
-}
-
-function parseDetections(raw) {
-  let data = null;
-  try { data = JSON.parse(raw); }
-  catch {
-    const i = raw.indexOf("{"), j = raw.lastIndexOf("}");
-    if (i !== -1 && j !== -1) data = JSON.parse(raw.slice(i, j + 1));
-  }
-  const arr = data?.detections || [];
-  return arr.map(d => {
-    const b = d.box_norm; if (!b) return null;
-    const clamp = (v,a,b)=>Math.min(Math.max(+v,a),b);
-    const xc = clamp(b.xc,0,1), yc = clamp(b.yc,0,1), w = clamp(b.w,0,1), h = clamp(b.h,0,1);
-    return { label: d.label_no ?? "objekt", conf: +d.confidence || 0, xc, yc, w, h };
-  }).filter(Boolean);
-}
-
-function detectionsToPixels(d, W, H) {
-  return d.map(o => {
-    const x1 = Math.max(0, Math.min(Math.round((o.xc - o.w/2)*W), W-1));
-    const y1 = Math.max(0, Math.min(Math.round((o.yc - o.h/2)*H), H-1));
-    const x2 = Math.max(0, Math.min(Math.round((o.xc + o.w/2)*W), W-1));
-    const y2 = Math.max(0, Math.min(Math.round((o.yc + o.h/2)*H), H-1));
-    return { x1, y1, x2, y2, label: o.label, conf: o.conf };
-  });
-}
-
-function fitContainScale({ srcW, srcH, dstW, dstH }) {
-  const s = Math.min(dstW/srcW, dstH/srcH);
-  const w = srcW * s, h = srcH * s;
-  return { sx: s, sy: s, dx: (dstW - w)/2, dy: (dstH - h)/2 };
-}
-
-/* ---------- NEW: Exercise generation & rating ---------- */
-
-async function generateExercisesForWord(norsk: string, english: string) {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
-
-  const sys = `
-Du er en norsk språklærer. Lag korte, konkrete elevoppgaver på A1-A2-nivå (enkelt, naturlig språk). Vær kreativ med oppgavene og inkluder varierte oppgavetyper.
-Returner KUN gyldig JSON med:
-{"write":["...","...","..."],"speak":["...","...","..."],"answer":["...","...","..."]}
-
-- write: be eleven skrive én norsk setning som bruker ordet naturlig.
-- speak: be eleven SI én norsk setning som bruker ordet naturlig (for taleopptak).
-- answer: still ett kort spørsmål på norsk som inkluderer ordet.
-Oppgavene må være varierte, unike og relevante for ordet.
-  `.trim();
-
-  const user = `
-Ord (norsk): "${norsk}"
-Engelsk: "${english}"
-Lag 3 oppgaver per kategori.
-  `.trim();
-
-  const body = {
-    model: "gpt-4o-mini",
-    temperature: 0.4,
-    max_output_tokens: 300,
-    input: [
-      { role: "system", content: [{ type:"input_text", text: sys }] },
-      { role: "user", content: [{ type:"input_text", text: user }] }
-    ],
-  };
-
-  const rsp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-    body: JSON.stringify(body),
-  });
-  if (!rsp.ok) throw new Error(await rsp.text());
-  const json = await rsp.json();
-  const out = getOutputText(json) || "{}";
-  let data = {};
-  try { data = JSON.parse(out); } catch { data = {}; }
-  return {
-    write: Array.isArray(data.write) ? data.write.slice(0,3) : [],
-    speak: Array.isArray(data.speak) ? data.speak.slice(0,3) : [],
-    answer: Array.isArray(data.answer) ? data.answer.slice(0,3) : [],
-  };
-}
-
-async function rateAnswerWithOpenAI(norskOrd: string, prompt: string, userAnswer: string) {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
-
-  const sys = `
-Du er en streng, men rettferdig norsklærer. Vurder elevsvaret KUN basert på oppgaven. Du er ikke streng på teori, KUN språkferdigheter.
-Gi poeng 1–6 (heltall) og en kort begrunnelse på norsk (maks 2 setninger).
-Returner KUN JSON: {"score":8,"reason":"..."}
-  `.trim();
-
-  const user = `
-Oppgave: ${prompt}
-Ord som skal brukes (norsk): ${norskOrd}
-Elevsvar: ${userAnswer}
-  `.trim();
-
-  const body = {
-    model: "gpt-4o-mini",
-    temperature: 0,
-    max_output_tokens: 120,
-    input: [
-      { role: "system", content: [{ type:"input_text", text: sys }] },
-      { role: "user", content: [{ type:"input_text", text: user }] }
-    ],
-  };
-
-  const rsp = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-    body: JSON.stringify(body),
-  });
-  if (!rsp.ok) throw new Error(await rsp.text());
-  const json = await rsp.json();
-  const out = getOutputText(json) || "{}";
-  let d = { score: 0, reason: "Kunne ikke tolke svar." };
-  try { d = JSON.parse(out); } catch {}
-  return { score: Math.max(1, Math.min(6, d.score|0)), reason: String(d.reason || "") };
-}
-
-/* ---------- NEW: Speech-to-text (Whisper) ---------- */
-
-async function transcribeAudioWithOpenAI(fileUri: string) {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
-
-  const form = new FormData();
-  // iOS/Android trenger type & name
-  form.append("file", {
-    uri: fileUri,
-    type: "audio/m4a",
-    name: "speech.m4a",
-  } as any);
-  form.append("model", "whisper-1"); // stabil STT
-  form.append("language", "no");     // norsk
-
-  const rsp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${key}` },
-    body: form,
-  });
-  if (!rsp.ok) throw new Error(await rsp.text());
-  const json = await rsp.json();
-  // Whisper returnerer .text
-  return (json.text || "").trim();
-}
-
-/* ---------- small UI helpers ---------- */
-
-function getExercise(ex: {write:string[], speak:string[], answer:string[]}, tab: string, idx: number) {
-  const arr = tab === "write" ? ex.write : tab === "speak" ? ex.speak : ex.answer;
-  return arr[idx] || null;
-}
-
-function Center({ children }) {
-  return <View style={{ flex:1, backgroundColor:"#000", alignItems:"center", justifyContent:"center" }}>{children}</View>;
-}
-
-function BigMenuButton({ label, onPress }) {
+// Function to center item in middle of phone screen
+function Center({ children }: { children: React.ReactNode }) {
   return (
-    <Pressable style={styles.bigBtn} onPress={onPress}>
-      <Text style={styles.bigBtnTxt}>{label}</Text>
-    </Pressable>
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      {children}
+    </View>
   );
 }
 
-/* ---------- styles ---------- */
+// SNAPSHOT BUTTON STYLE AND ANIMATION
+function CaptureButton({
+  onPress,
+  disabled = false,
+}: {
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const scale = React.useRef(new Animated.Value(1)).current; // Used to scale the snapshot button
+
+  const pressIn = () => {
+    console.log("IN = Capture Button");
+    Animated.spring(scale, {
+      toValue: 0.9,
+      useNativeDriver: true,
+      speed: 18,
+      bounciness: 6,
+    }).start();
+  };
+  const pressOut = () => {
+    console.log("OUT = Capture Button");
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 18,
+      bounciness: 6,
+    }).start();
+  };
+
+  return (
+    <Animated.View style={[styles.wrap, { transform: [{ scale }] }]}>
+      <View style={styles.outerRing}>
+        <View style={styles.innerRing}>
+          <Pressable
+            onPressIn={pressIn}
+            onPressOut={pressOut}
+            onPress={() => !disabled && onPress()}
+            android_ripple={{ color: "#ddd", radius: 44 }}
+            style={styles.center}
+          />
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
+
+// ----- LANGUAGE SELECT DROPDOWN BUTTON -------
+function ChangeLanguageButton({
+  languages,
+  selected,
+  onSelect,
+}: {
+  languages: { label: string; code: string }[];
+  selected: string;
+  onSelect: (code: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const current = languages.find((l) => l.code === selected) ?? languages[0];
+
+  return (
+    <View style={langStyles.wrap}>
+      {/* Hovedknappen */}
+      <Pressable style={langStyles.mainBtn} onPress={() => setOpen((o) => !o)}>
+        <Text style={langStyles.mainTxt}>{flagFor(current.code)}</Text>
+      </Pressable>
+
+      {/* Dropdown */}
+      {open && (
+        <View style={langStyles.dropdown}>
+          {languages.map((l) => (
+            <Pressable
+              key={l.code}
+              style={langStyles.item}
+              onPress={() => {
+                onSelect(l.code);
+                setOpen(false);
+              }}
+            >
+              <Text style={langStyles.itemTxt}>
+                {flagFor(l.code)} {l.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ASYNC FUNCTION TO RESIZE IMAGE FOR SENDING TO AI
+async function resizeToMaxSide(
+  photoUri: string,
+  maxSide: number,
+  quality: number
+) {
+  // Get image dimensions
+  const { width, height } = await ImageManipulator.manipulateAsync(
+    photoUri,
+    []
+  );
+  let resize = {};
+  if (width > height) {
+    resize = { width: maxSide };
+  } else {
+    resize = { height: maxSide };
+  }
+  // Resize and compress
+  const result = await ImageManipulator.manipulateAsync(
+    photoUri,
+    [{ resize }],
+    { compress: quality, base64: true }
+  );
+  return result;
+}
+
+// Function to get the chosen language into prompt
+function getLanguageLabelByCode(code: string) {
+  const match = LANGUAGES.find((l) => l.code === code);
+  return match ? match.label : "English"; // English as fallback
+}
+
+// 🔄 CHANGED: Build prompt to request NORMALIZED boxes (like code 1)
+function buildVisionPrompt(imgW: number, imgH: number, label: string) {
+  return `
+Return ONLY valid JSON, no prose.
+
+Detect maximum 5 clearly visible distinct objects in the image and output:
+{
+  "objects": [
+    {
+      "label_NO": "...",
+      "label_TRANS": "...",
+      "desc_NO": "...",        // ≤8 words
+      "desc_TRANS": "...",     // ≤8 words
+      "confidence": 0.95,                // 2 decimals [0,1]
+      "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 } // normalized to [0,1]
+    }
+  ]
+}
+
+Rules:
+- Image size: width=${imgW}, height=${imgH} px; but return boxes normalized [0,1].
+- xc,yc are the box center; w,h are width/height; 4 decimals; clamp inside [0,1].
+- Boxes must tightly cover the visible object (avoid background).
+- Sort objects by confidence descending.
+- No trailing commas. Only JSON.
+
+Rules for labels:
+- Use **specific, concrete nouns** that match what the human would say when pointing at it in real life.
+- Prefer more informative words over generic ones:
+  (e.g. “energidrikk” is better than “boks”).
+- Avoid vague terms like “ting”, “objekt”, “produkt”.
+- label_NO must be in **Norwegian**.
+- label_TRANS must be the same word in **${label}**.
+- Do not invent brand names unless it's the only clear identifier (e.g. a can that clearly shows the brand).
+- Keep it 1-2 words max.
+
+Rules for an extra learning phrase:
+- Add "desc_NO": one short Norwegian phrase (max 8 words) describing what/where the object is in THIS image.
+- Also try to explain objects beside it if possible.
+- No brand names unless obviously visible.
+- No commas, no periods, no capitalization rules—just a phrase (e.g., "energidrikk på bordet").
+- Also add "desc_TRANS": same phrase in ${label} (max 8 words).
+`.trim();
+}
+
+// Async funciton to be sure openai can recieve prompt
+async function callOpenAIWithTimeout(b64: string, prompt: string, ms: number) {
+  const control = new AbortController();
+  const timeout = setTimeout(() => control.abort(), ms);
+  try {
+    return await callOpenAI(b64, prompt, control.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Function to call OpenAI and get its output text
+async function callOpenAI(b64: string, prompt: string, signal?: AbortSignal) {
+  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+  if (!apiKey) throw new Error("Missing EXPO_PUBLIC_OPENAI_API_KEY");
+
+  const response = await fetch(OPENAI_URL, {
+    // Sends a HTTP request to OpenAI
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`, // Send API
+      "Content-Type": "application/json", // Tells OpenAI that we send a JSON
+    },
+    body: JSON.stringify({
+      model: MODEL, // Which model to use
+      input: [
+        // What we send to the model. (text prompt, image as b64)
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: prompt },
+            {
+              type: "input_image",
+              image_url: `data:image/jpeg;base64,${b64}`,
+              detail: "low",
+            },
+          ],
+        },
+      ],
+      temperature: 0,
+    }),
+    signal,
+  });
+
+  // If error
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    throw new Error(`OpenAI error ${response.status}: ${errText}`);
+  }
+
+  const data = await response.json(); // Converts from text to JSON
+  const textOut = getOutputText(data); // Extract the text field from openAi's output
+
+  return textOut; // OpenAI's formatted text answer
+}
+
+// Function to extract the Output text from OpenAI
+function getOutputText(data: any): string {
+  // Find all content parts and merge them together
+  return (
+    data?.output
+      ?.flatMap((msg: any) => msg?.content ?? [])
+      ?.filter((p: any) => p?.type === "output_text")
+      ?.map((p: any) => p?.text ?? "")
+      ?.join("\n")
+      ?.trim() ?? ""
+  );
+}
+
+// Function to size text "bubble" based on text length
+function sizeBubble(label: string) {
+  const charW = Math.round(BUBBLE.font * 0.55);
+  const textW = label.length * charW;
+  const w = Math.min(
+    BUBBLE.maxW,
+    Math.max(BUBBLE.minW, textW + 2 * BUBBLE.padX)
+  );
+  const h = BUBBLE.font + 2 * BUBBLE.padY;
+  return { w, h };
+}
+
+
+/* #######################################  STYLES  ####################################### */
+
+const BTN_SIZE = 78; // Total Size
+const BTN_RING_SIZE = 3; // White Ring Size
+const BTN_BLACK_SIZE = 4; // Black Ring Size
+const BTN_BORDER_RADIUS = 3; // Higher => More Squary
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
-  btn: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: "#2b6", borderRadius: 8 },
-  btnTxt: { color: "white", fontWeight: "700" },
-
-  snapBtn: {
-    position: "absolute", bottom: 36, alignSelf: "center",
-    width: 78, height: 78, borderRadius: 39, borderWidth: 4, borderColor: "#eee",
-    backgroundColor: "#111", alignItems: "center", justifyContent: "center",
+  btn: {
+    backgroundColor: "#2b6",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
   },
-  snapInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#e0e0e0" },
+  btnTxt: { color: "#fff", fontWeight: "700", fontSize: 20, fontFamily: "" },
 
-  flipBtn: {
-    position: "absolute", top: Platform.OS === "ios" ? 50 : 24, right: 16,
-    paddingHorizontal: 10, paddingVertical: 8, backgroundColor: "rgba(0,0,0,0.5)", borderRadius: 8,
-  },
-  flipTxt: { color: "#fff", fontWeight: "700" },
-
-  closeBtn: {
-    position: "absolute", top: Platform.OS === "ios" ? 50 : 24, left: 16,
-    width: 36, height: 36, borderRadius: 18, backgroundColor: "rgba(0,0,0,0.55)",
-    alignItems: "center", justifyContent: "center",
-  },
-  closeTxt: { color: "#fff", fontSize: 18, fontWeight: "800" },
-
+  // Flash Style
   flash: { ...StyleSheet.absoluteFillObject, backgroundColor: "white" },
 
-  tag: { position: "absolute", paddingHorizontal: 6, paddingVertical: 3, backgroundColor: "rgba(0,0,0,0.7)", borderRadius: 6 },
-  tagTxt: { color: "yellow", fontSize: 12, fontWeight: "700" },
+  // Snapshot Button Style
+  wrap: {
+    position: "absolute",
+    bottom: 36,
+    alignSelf: "center",
+  },
+  outerRing: {
+    width: BTN_SIZE,
+    height: BTN_SIZE,
+    borderRadius: BTN_SIZE / BTN_BORDER_RADIUS,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: BTN_RING_SIZE,
+  },
+  innerRing: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    borderRadius:
+      (BTN_SIZE - BTN_BORDER_RADIUS * BTN_RING_SIZE) / BTN_BORDER_RADIUS,
+    backgroundColor: "#000",
+    padding: BTN_BLACK_SIZE,
+  },
+  center: {
+    flex: 1,
+    borderRadius:
+      (BTN_SIZE - BTN_BORDER_RADIUS * (BTN_RING_SIZE + BTN_BLACK_SIZE)) /
+      BTN_BORDER_RADIUS,
+    backgroundColor: "#fff",
+  },
 
+  // Exit Preview Button
+  btnExitPreview: {
+    justifyContent: "center",
+    alignItems: "center",
+    fontSize: 20,
+    marginTop: 50,
+    marginLeft: 20,
+    height: 50,
+    width: 50,
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.3)",
+    backgroundColor: "rgba(0, 0, 0, 0.27)", // 50% transparent green background
+  },
+
+  // Loading Bar Styles
   loadingWrap: {
-    position: "absolute", left: 0, right: 0, bottom: 120,
-    alignItems: "center", justifyContent: "center",
-  },
-  loadingTxt: { color: "#fff", marginBottom: 8, fontWeight: "600" },
-  barBg: {
-    width: SW * 0.6, height: 8, borderRadius: 6,
-    backgroundColor: "rgba(255,255,255,0.2)", overflow: "hidden",
-  },
-  barFill: { height: 8, backgroundColor: "yellow" },
-
-  predBar: {
     position: "absolute",
     left: 0,
     right: 0,
-    backgroundColor: "rgba(20,20,20,0.95)",
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    zIndex: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.2,
-    shadowRadius: 8,
-    elevation: 10,
+    bottom: 120,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 999,
   },
-  predBarCollapsed: { bottom: 0, height: "10%" },
-  predBarExpanded: { bottom: 0, height: "80%" },
-  predList: { flex: 1, justifyContent: "flex-start" },
-  predRow: { flexDirection: "row", alignItems: "center", marginBottom: 10 },
-  predLabel: { color: "#fff", fontWeight: "700", fontSize: 16, flex: 2 },
-  predArrow: { color: "#fff", fontSize: 16, marginHorizontal: 8 },
-  predEn: { color: "#aaf", fontWeight: "700", fontSize: 16, flex: 2 },
+  loadingTxt: {
+    color: "#fff",
+    marginBottom: 8,
+    fontWeight: "600",
+    fontSize: 16,
+  },
+  loadingBarBg: {
+    width: "70%",
+    height: 8,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    overflow: "hidden",
+  },
+  barFill: {
+    height: 8,
+    backgroundColor: "#3b82f6",
+  },
+  detectionsWrap: {
+    paddingBottom: 32,
+  },
+  title: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 18,
+    marginBottom: 16,
+    textAlign: "center",
+    letterSpacing: 0.5,
+  },
+  itemCard: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  itemTextWrap: {
+    flex: 1,
+    marginRight: 10,
+  },
+  itemLabel: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  itemTranslation: {
+    color: "#bbb",
+    fontSize: 13,
+    marginTop: 2,
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  listenText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  descRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  descChip: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  descChipText: {
+    color: "#ddd",
+    fontSize: 12,
+    fontStyle: "italic",
+  },
+  ttsButton: {
+    backgroundColor: "#3b82f6",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 40, // valgfritt
+    minHeight: 36,
+  },
+  btnContainer: {
+    borderRadius: 8,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+  },
+  blueBg: {
+    backgroundColor: "#3b82f6", // base blå
+    borderRadius: 8,
+  },
+  whiteBg: {
+    backgroundColor: "#fff", // base blå
+    borderRadius: 8,
+  },
+  
 
-  // 🟣 NEW:
-  taskBtn: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: "#333", borderRadius: 8, marginLeft: 8 },
-  taskBtnTxt: { color: "#fff", fontWeight: "700" },
+});
 
-  // Modal
-  modalRoot: { flex:1, backgroundColor:"#000" },
-  modalClose: { position:"absolute", top: Platform.OS === "ios" ? 50 : 24, left: 16, zIndex: 20, width:36, height:36, alignItems:"center", justifyContent:"center", backgroundColor:"rgba(255,255,255,0.1)", borderRadius:18 },
-  modalTitle: { color:"#fff", fontWeight:"800", fontSize:18 },
-  modalSub: { color:"#aaa", marginTop: 6 },
-
-  bigBtn: { backgroundColor:"#1f1f1f", paddingVertical:18, paddingHorizontal:16, borderRadius:12, marginBottom:14, borderWidth:1, borderColor:"#333" },
-  bigBtnTxt: { color:"#fff", fontWeight:"700", fontSize:16 },
-
-  exerciseHeader: { color:"#fff", fontWeight:"800", fontSize:17, marginTop: 18, marginBottom: 10 },
-  exercisePrompt: { color:"#ddd", fontSize:16, lineHeight:22 },
-
-  input: { marginTop: 16, backgroundColor:"#161616", borderRadius:10, padding:12, color:"#fff", minHeight:80, borderWidth:1, borderColor:"#333" },
-
-  checkBtn: { backgroundColor:"#2b6", paddingHorizontal:16, paddingVertical:10, borderRadius:10 },
-  checkBtnTxt: { color:"#fff", fontWeight:"800" },
-
-  nextBtn: { backgroundColor:"#555", paddingHorizontal:16, paddingVertical:10, borderRadius:10 },
-  nextBtnTxt: { color:"#fff", fontWeight:"800" },
-
-  backBtn: { backgroundColor:"#333", paddingHorizontal:16, paddingVertical:10, borderRadius:10 },
-  backBtnTxt: { color:"#fff", fontWeight:"800" },
-
-  ratingCard: { marginTop: 16, backgroundColor:"#121212", borderRadius:12, padding:12, borderWidth:1, borderColor:"#2a2a2a" },
-  ratingScore: { color:"#ff9", fontWeight:"800", marginBottom: 6 },
-  ratingReason: { color:"#ddd" },
-
-  // Speak
-  recordBtn: { marginTop:16, backgroundColor:"#083", paddingHorizontal:18, paddingVertical:12, borderRadius:12 },
-  recordBtnTxt: { color:"#fff", fontWeight:"800" },
+const langStyles = StyleSheet.create({
+  wrap: {
+    position: "absolute",
+    top: 60,
+    right: 20,
+    zIndex: 999,
+    alignItems: "flex-end",
+  },
+  mainBtn: {
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  mainTxt: { fontSize: 20, color: "#fff" },
+  dropdown: {
+    marginTop: 8,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: 12,
+    paddingVertical: 6,
+    minWidth: 160,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  item: { paddingHorizontal: 12, paddingVertical: 10 },
+  itemTxt: { color: "#fff", fontSize: 16 },
 });
