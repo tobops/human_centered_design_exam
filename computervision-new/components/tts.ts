@@ -2,10 +2,11 @@ import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import { encode as btoa } from "base-64";
 
-const DEFAULT_VOICE_ID = "s2xtA7B2CTXPPlJzch1v";
+const DEFAULT_VOICE_ID = "4kCDY3HJwvO7Zp3con83";
 const DEFAULT_MODEL_ID = "eleven_v3";
 // Helge: vUmLiNBm6MDcy1NUHaVr
 // Dennis: s2xtA7B2CTXPPlJzch1v
+// Sebastian: 4kCDY3HJwvO7Zp3con83
 // British Nathaniel: Wq15xSaY3gWvazBRaGEU
 
 let initialized = false;
@@ -20,6 +21,7 @@ export async function initTTS() {
 
 export async function speakTTS(
   speaktext: string,
+  language: string,
   opts?: {
     apiKey?: string;
     voiceId?: string;
@@ -41,6 +43,13 @@ export async function speakTTS(
     const voiceId = opts?.voiceId ?? DEFAULT_VOICE_ID;
     const modelId = opts?.modelId ?? DEFAULT_MODEL_ID;
 
+    const prompts = {
+      no: "[snakk sakte og tydelig på norsk] ",
+      else: "[speak slow and clearly in the written language] ",
+    };
+
+    const prompt = prompts[language as keyof typeof prompts];
+
     const res = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
       {
@@ -51,7 +60,7 @@ export async function speakTTS(
           "content-type": "application/json",
         },
         body: JSON.stringify({
-          text: "[si dette sakte og tydelig på norsk bokmål: ]" + speaktext,              // we'll set this below
+          text: prompt + speaktext,
           model_id: modelId, // e.g. "eleven_v3" or "eleven_multilingual_v2"
         }),
       }

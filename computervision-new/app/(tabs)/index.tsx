@@ -9,12 +9,12 @@
 // 2. Add a button to choose from different languages: ===FINISHED===
 // English, Spanish, Polish, italian ===FINISHED===
 // 3. Choose which language to log. output: (norwegian word, chosen language word) ===FINISHED===
-// 4. Add accurate boxes around objects and show them with norwegian label.
+// 4. Add accurate boxes around objects and show them with norwegian label. ===FINISHED===
 
 // Third Step:
-// 1. Add a modal that user can drag up to see
-// 2. Show both the norwegian word and translated word
-// 3. Add a "read text" speech button. (button, norwegian word, translated word)
+// 1. Add a modal that user can drag up to see ===FINISHED===
+// 2. Show both the norwegian word and translated word ===FINISHED==
+// 3. Add a "read text" speech button. (button, norwegian word, translated word) ===FINISHED===
 
 // Fourth Step:
 // 1. Add "Task" button on the right of each word
@@ -25,6 +25,8 @@
 /* #######################################  IMPORTS  ####################################### */
 import ModalSheet from "../../components/ui/ModalSheet";
 import { initTTS, speakTTS } from "../../components/tts";
+import TaskSheet, { type DetectedItem } from "../../components/ui/TaskSheet";
+import { t, languageNameFromCode } from "../../components/i18n";
 
 import React, { useRef, useState, useEffect } from "react";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -62,10 +64,34 @@ const LANGUAGES = [
   { label: "Italian", code: "it" },
   { label: "French", code: "fr" },
   { label: "German", code: "de" },
+  { label: "Ukrainian", code: "uk" },
+  { label: "Hindi", code: "hi" },
+  { label: "Urdu", code: "ur" },           // Pakistan
+  { label: "Lithuanian", code: "lt" },
+  { label: "Chinese (Mandarin)", code: "zh" },
+  { label: "Portuguese", code: "pt" },
+  { label: "Russian", code: "ru" },
+  { label: "Arabic", code: "ar" },
+  { label: "Japanese", code: "ja" },
+  { label: "Korean", code: "ko" },
+  { label: "Turkish", code: "tr" },
+  { label: "Dutch", code: "nl" },
+  { label: "Swedish", code: "sv" },
+  { label: "Danish", code: "da" },
+  { label: "Finnish", code: "fi" },
+  { label: "Greek", code: "el" },
+  { label: "Thai", code: "th" },
+  { label: "Vietnamese", code: "vi" },
+];
+
+const LEVELS = [
+  "A1",
+  "A2",
+  "B1",
+  "B2"
 ];
 
 function flagFor(code: string) {
-  // Simple Emoji for flag
   const map: Record<string, string> = {
     en: "🇬🇧",
     es: "🇪🇸",
@@ -73,6 +99,24 @@ function flagFor(code: string) {
     it: "🇮🇹",
     fr: "🇫🇷",
     de: "🇩🇪",
+    uk: "🇺🇦",
+    hi: "🇮🇳",
+    ur: "🇵🇰",
+    lt: "🇱🇹",
+    zh: "🇨🇳",
+    pt: "🇵🇹",
+    ru: "🇷🇺",
+    ar: "🇸🇦",
+    ja: "🇯🇵",
+    ko: "🇰🇷",
+    tr: "🇹🇷",
+    nl: "🇳🇱",
+    sv: "🇸🇪",
+    da: "🇩🇰",
+    fi: "🇫🇮",
+    el: "🇬🇷",
+    th: "🇹🇭",
+    vi: "🇻🇳",
   };
   return map[code] ?? "🏳️";
 }
@@ -136,11 +180,18 @@ export default function Screen() {
   // Modal State
   const [modalOpen, setModalOpen] = useState(false);
 
+  // Task State
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [taskItem, setTaskItem] = useState<DetectedItem | null>(null);
+
   //Button Click Animation
   const buttonAnim = useRef(new Animated.Value(1)).current;
 
   // Language chosen (use setTargetLang("language_code") to change language)
   const [targetLang, setTargetLang] = useState("en");
+
+  // Diff Level chosen
+  const [targetLevel, setTargetLevel] = useState("A1")
 
   useEffect(() => { initTTS(); }, []);
 
@@ -215,6 +266,7 @@ export default function Screen() {
 
     // Show MaterialIcon?
     showIcon?: bool;
+    iconLibrary?: "MaterialIcons" | "FontAwsome5";
     // MaterialIcon Name?
     iconName?: keyof typeof MaterialIcons.glyphMap | string;
     iconSize?: number;
@@ -235,6 +287,7 @@ export default function Screen() {
   function TTSButton({
     onPress,
     showIcon = false,
+    iconLibrary = "MaterialIcons",
     iconName = "multitrack-audio",
     iconSize = 20,
     iconColor = "#fff",
@@ -281,9 +334,17 @@ export default function Screen() {
             ) : (
               <>
                 {showIcon && (
-                  <MaterialIcons name={iconName as any} size={iconSize} color={iconColor} />
+                  <>
+                    {iconLibrary === "FontAwsome5" ? (
+                      <FontAwesome5 name={iconName as any} size={iconSize} color={iconColor} />
+                    ) : (
+                      <MaterialIcons name={iconName as any} size={iconSize} color={iconColor} />
+                    )}
+                  </>
                 )}
-                {showText && !!text && <Text style={[{ color: "#fff", fontWeight: "600" }, textStyle]}>{text}</Text>}
+                {showText && !!text && (
+                  <Text style={[{ color: "#fff", fontWeight: "600" }, textStyle]}>{text}</Text>
+                )}
               </>
             )}
           </Pressable>
@@ -329,7 +390,8 @@ export default function Screen() {
         const prompt = buildVisionPrompt(
           photo_resized.width!,
           photo_resized.height!,
-          label
+          label,
+          targetLevel
         );
         logWithTime("Prompt Built");
         const aiText = await callOpenAIWithTimeout(
@@ -427,7 +489,7 @@ export default function Screen() {
     // if not-permission
     return (
       <Center>
-        <Text>Asking For Camera Permission...</Text>
+        <Text>{t(targetLang, "askCamPerm")}</Text>
       </Center>
     );
   }
@@ -440,7 +502,7 @@ export default function Screen() {
         <Center>
           <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
           <Pressable style={styles.btn} onPress={requestPermission}>
-            <Text style={styles.btnTxt}>Give access</Text>
+            <Text style={styles.btnTxt}>{t(targetLang, "giveAccess")}</Text>
           </Pressable>
         </Center>
       )
@@ -542,7 +604,7 @@ export default function Screen() {
           {/* Loading Bar */}
           {loading && (
             <View style={styles.loadingWrap}>
-              <Text style={styles.loadingTxt}>Processing...</Text>
+              <Text style={styles.loadingTxt}>{t(targetLang, "processing")}</Text>
               <View style={styles.loadingBarBg}>
                 <Animated.View style={[styles.barFill, { width: barW }]} />
               </View>
@@ -580,7 +642,7 @@ export default function Screen() {
               {/* ==================== WRAPPER FOR DETECTION CARDS ==================== */}
               <View style={styles.detectionsWrap}>
                 {/* Title shown at the top of the modal */}
-                <Text style={styles.title}>Items Detected</Text>
+                <Text style={styles.title}>{t(targetLang, "itemsDetected")}</Text>
 
                 {/* Map over all AI detections and render one card per object */}
                 {detections.map((det, i) => (
@@ -601,15 +663,19 @@ export default function Screen() {
                       <View style={styles.buttonRow}>
                         {/* Text-to-speech (plays the Norwegian label) */}
                         <TTSButton
-                          onPress={() => speakTTS(det.label_NO)}
+                          onPress={() => speakTTS(det.label_NO, "no")}
                           showIcon={true}
                           iconName="multitrack-audio"
                           style={styles.ttsButton}
                         />
                         {/* Future Task button (can open exercises or extra info) */}
                         <TTSButton
-                          onPress={() => speakTTS("Ikke Tilgjengelig enda")}
+                          onPress={() => {
+                            setTaskItem(det);
+                            setTaskOpen(true);
+                          }}
                           showIcon={true}
+                          iconLibrary="FontAwsome5"
                           iconName="tasks"
                           style={styles.ttsButton}
                           />
@@ -621,7 +687,7 @@ export default function Screen() {
                       {/* Left chip: short Norwegian description of object position */}
                       <View style={styles.descChip}>
                         <TTSButton
-                          onPress={() => speakTTS(det.desc_NO)}
+                          onPress={() => speakTTS(det.desc_NO, "no")}
                           showText
                           text={`🇳🇴 ${det.desc_NO}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
                           textStyle={styles.descChipText}
@@ -631,7 +697,7 @@ export default function Screen() {
                       {/* Right chip: translated description in chosen target language */}
                       <View style={styles.descChip}>
                         <TTSButton
-                          onPress={() => speakTTS(det.desc_TRANS)}
+                          onPress={() => speakTTS(det.desc_TRANS, "else")}
                           showText
                           text={`${flagFor(targetLang)} ${det.desc_TRANS}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
                           textStyle={styles.descChipText}
@@ -643,6 +709,18 @@ export default function Screen() {
               </View>
             </ScrollView>
           </ModalSheet>
+          <TaskSheet
+            visible={taskOpen}
+            onClose={() => setTaskOpen(false)}
+            item={taskItem}
+            targetLang={targetLang}
+            level={targetLevel as "A1" | "A2" | "B1" | "B2"}
+            speak={(t, lang) => speakTTS(t, lang)}
+            onStartTask={(it, { level, lang }) => {
+              // TODO: start oppgaveflyt her
+              console.log("Start task for:", it.label_NO, level, lang);
+            }}
+          />
 
 
         </View>
@@ -651,7 +729,7 @@ export default function Screen() {
   }
 
   // 4. Given Camera Permission: Show live camera (back)
-  console.log("Returned = Screen  |  Language = ", targetLang);
+  console.log("Returned = Screen  |  Language = ", targetLang, "  |  Level = ", targetLevel);
   return (
     <View style={styles.root}>
       <CameraView
@@ -665,6 +743,12 @@ export default function Screen() {
         languages={LANGUAGES}
         selected={targetLang}
         onSelect={setTargetLang}
+      />
+      <ChangeDiffButton
+        levels={LEVELS}
+        selected_level={targetLevel}
+        onSelect={setTargetLevel}
+        targetLang={targetLang}
       />
       <CaptureButton onPress={handleCapture} />
     </View>
@@ -750,22 +834,104 @@ function ChangeLanguageButton({
 
       {/* Dropdown */}
       {open && (
-        <View style={langStyles.dropdown}>
-          {languages.map((l) => (
-            <Pressable
-              key={l.code}
+        <>
+          {/* Press outside = close */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+            
+          <View style={langStyles.dropdown}>
+            <ScrollView
+              style={{ maxHeight: 260 }}
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
+              {languages.map((l) => (
+                <Pressable
+                  key={l.code}
+                  style={langStyles.item}
+                  onPress={() => {
+                    onSelect(l.code);
+                    setOpen(false);
+                  }}
+                >
+                  <Text style={langStyles.itemTxt}>
+                    {flagFor(l.code)} {l.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+
+// FUNCTION TO CHANGE DIFFICULTY
+function ChangeDiffButton ({
+  levels,
+  selected_level,
+  onSelect,
+  targetLang,
+}: {
+  levels: string[];
+  selected_level: string;
+  onSelect: (code: string) => void;
+  targetLang: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const current = levels.find((l) => l === selected_level) ?? levels[0];
+
+
+  return (
+    <View style={langStyles.wrapLevel}>
+      {/* Hovedknappen */}
+      <Pressable style={langStyles.mainBtn} onPress={() => setOpen((o) => !o)}>
+        <Text style={langStyles.mainTxt}>{current}</Text>
+      </Pressable>
+
+      {/* Dropdown */}
+      {open && (
+        <>
+          {/*Close when pressing outside*/}
+          <Pressable
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+            }}
+            onPress={() => setOpen(false)}
+          />
+          <View style={langStyles.dropdown}>
+            <Text style={{
+              color: "#fff",
+              marginLeft: 8,
+              marginRight: 8,
+              fontWeight: "800",
+              fontSize: 14,
+              letterSpacing: 0.5
+              
+              
+            }}>{t(targetLang, "languageLevels")}</Text>
+            {levels.map((l) => (
+              <Pressable
+              key={l}
               style={langStyles.item}
               onPress={() => {
-                onSelect(l.code);
+               onSelect(l);
                 setOpen(false);
               }}
-            >
-              <Text style={langStyles.itemTxt}>
-                {flagFor(l.code)} {l.label}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
+              >
+                <Text style={langStyles.itemTxt}>
+                  {l}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
       )}
     </View>
   );
@@ -804,7 +970,7 @@ function getLanguageLabelByCode(code: string) {
 }
 
 // 🔄 CHANGED: Build prompt to request NORMALIZED boxes (like code 1)
-function buildVisionPrompt(imgW: number, imgH: number, label: string) {
+function buildVisionPrompt(imgW: number, imgH: number, label: string, level: string) {
   return `
 Return ONLY valid JSON, no prose.
 
@@ -822,29 +988,38 @@ Detect maximum 5 clearly visible distinct objects in the image and output:
   ]
 }
 
+Learner level (CEFR): ${level} (A1, A2, B1, B2).
+
+Level adaptation rules:
+- A1: use very common, simple nouns; desc phrases with 3-5 very basic words.
+- A2: slightly more specific nouns; simple modifiers allowed; desc up to 6-7 words.
+- B1: specific, concrete nouns; allow compound nouns; desc can include simple prepositional detail.
+- B2: most precise/technical everyday nouns; prefer compound nouns over generic terms; desc may include relational/contrast detail—still minimum 8 words.
+- Difficulty increases with level for both label_NO/label_TRANS choice and desc phrasing; all other rules below still apply.
+
 Rules:
 - Image size: width=${imgW}, height=${imgH} px; but return boxes normalized [0,1].
 - xc,yc are the box center; w,h are width/height; 4 decimals; clamp inside [0,1].
+- Be creative and realistic when generating box coordinates — avoid round or repetitive values; use natural-looking decimals like 0.5346 or 0.2783 for variety and precision.
 - Boxes must tightly cover the visible object (avoid background).
 - Sort objects by confidence descending.
 - No trailing commas. Only JSON.
 
 Rules for labels:
-- Use **specific, concrete nouns** that match what the human would say when pointing at it in real life.
-- Prefer more informative words over generic ones:
-  (e.g. “energidrikk” is better than “boks”).
+- Use specific, concrete nouns that match what a human would say when pointing at it in real life.
+- Prefer more informative words over generic ones (e.g., “energidrikk” over “boks”).
 - Avoid vague terms like “ting”, “objekt”, “produkt”.
-- label_NO must be in **Norwegian**.
-- label_TRANS must be the same word in **${label}**.
-- Do not invent brand names unless it's the only clear identifier (e.g. a can that clearly shows the brand).
+- label_NO must be in Norwegian and reflect level ${level}.
+- label_TRANS must be the same word in ${label}, reflecting ${level}.
 - Keep it 1-2 words max.
+- Do not invent brand names unless it's the only clear identifier.
 
 Rules for an extra learning phrase:
-- Add "desc_NO": one short Norwegian phrase (max 8 words) describing what/where the object is in THIS image.
+- Add "desc_NO": one short Norwegian phrase (max 8 words) describing what/where the object is in THIS image; adjust complexity to ${level}.
 - Also try to explain objects beside it if possible.
 - No brand names unless obviously visible.
 - No commas, no periods, no capitalization rules—just a phrase (e.g., "energidrikk på bordet").
-- Also add "desc_TRANS": same phrase in ${label} (max 8 words).
+- Also add "desc_TRANS": same phrase in ${label} (max 8 words), matching ${level}.
 `.trim();
 }
 
@@ -1012,6 +1187,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontWeight: "600",
     fontSize: 16,
+    backgroundColor: "#000000ff",
+    padding: 10
   },
   loadingBarBg: {
     width: "70%",
@@ -1147,4 +1324,13 @@ const langStyles = StyleSheet.create({
   },
   item: { paddingHorizontal: 12, paddingVertical: 10 },
   itemTxt: { color: "#fff", fontSize: 16 },
+
+  // Level
+    wrapLevel: {
+    position: "relative",
+    top: 60,
+    right: 80,
+    zIndex: 999,
+    alignItems: "flex-end",
+  },
 });
