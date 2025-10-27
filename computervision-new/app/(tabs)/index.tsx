@@ -27,6 +27,7 @@ import ModalSheet from "../../components/ui/ModalSheet";
 import { initTTS, speakTTS } from "../../components/tts";
 import TaskSheet, { type DetectedItem } from "../../components/ui/TaskSheet";
 import { t, languageNameFromCode } from "../../components/i18n";
+import { flagFor } from "../../components/flags";
 
 import React, { useRef, useState, useEffect } from "react";
 import { CameraView, useCameraPermissions } from "expo-camera";
@@ -91,36 +92,6 @@ const LEVELS = [
   "B2"
 ];
 
-function flagFor(code: string) {
-  const map: Record<string, string> = {
-    en: "🇬🇧",
-    es: "🇪🇸",
-    pl: "🇵🇱",
-    it: "🇮🇹",
-    fr: "🇫🇷",
-    de: "🇩🇪",
-    uk: "🇺🇦",
-    hi: "🇮🇳",
-    ur: "🇵🇰",
-    lt: "🇱🇹",
-    zh: "🇨🇳",
-    pt: "🇵🇹",
-    ru: "🇷🇺",
-    ar: "🇸🇦",
-    ja: "🇯🇵",
-    ko: "🇰🇷",
-    tr: "🇹🇷",
-    nl: "🇳🇱",
-    sv: "🇸🇪",
-    da: "🇩🇰",
-    fi: "🇫🇮",
-    el: "🇬🇷",
-    th: "🇹🇭",
-    vi: "🇻🇳",
-  };
-  return map[code] ?? "🏳️";
-}
-
 const BUBBLE = {
   font: 12, // tekststørrelse
   padX: 15, // horisontal padding
@@ -142,6 +113,8 @@ export default function Screen() {
 
   const [detections, setDetections] = useState<
     Array<{
+      desc_NO: any;
+      desc_TRANS: any;
       label_NO: string;
       label_TRANS: string;
       confidence: number;
@@ -266,7 +239,7 @@ export default function Screen() {
 
     // Show MaterialIcon?
     showIcon?: bool;
-    iconLibrary?: "MaterialIcons" | "FontAwsome5";
+    iconLibrary?: "MaterialIcons" | "FontAwesome5";
     // MaterialIcon Name?
     iconName?: keyof typeof MaterialIcons.glyphMap | string;
     iconSize?: number;
@@ -335,7 +308,7 @@ export default function Screen() {
               <>
                 {showIcon && (
                   <>
-                    {iconLibrary === "FontAwsome5" ? (
+                    {iconLibrary === "FontAwesome5" ? (
                       <FontAwesome5 name={iconName as any} size={iconSize} color={iconColor} />
                     ) : (
                       <MaterialIcons name={iconName as any} size={iconSize} color={iconColor} />
@@ -521,6 +494,7 @@ export default function Screen() {
             style={StyleSheet.absoluteFill}
             resizeMode="contain"
           />
+          <Text style={styles.imageOverlayText}>*Marker position may not be correct*</Text>
           {/* Detection Bubbles (center of each detection box) */}
           {aiSize && detections.length > 0 && (
             <Svg
@@ -675,7 +649,7 @@ export default function Screen() {
                             setTaskOpen(true);
                           }}
                           showIcon={true}
-                          iconLibrary="FontAwsome5"
+                          iconLibrary="FontAwesome5"
                           iconName="tasks"
                           style={styles.ttsButton}
                           />
@@ -721,8 +695,6 @@ export default function Screen() {
               console.log("Start task for:", it.label_NO, level, lang);
             }}
           />
-
-
         </View>
       )
     );
@@ -1171,6 +1143,19 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.3)",
     backgroundColor: "rgba(0, 0, 0, 0.27)", // 50% transparent green background
   },
+  imageOverlayText: {
+    alignItems: "center",
+    justifyContent: "center",
+    position: "absolute",
+    top: 60,
+    textAlign: "center",
+    width: "100%",
+    color: "#000000ff",
+    fontSize: 12,
+    fontWeight: "400",
+    fontStyle: "italic",
+    opacity: 0.7,
+  },
 
   // Loading Bar Styles
   loadingWrap: {
@@ -1188,6 +1173,7 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     fontSize: 16,
     backgroundColor: "#000000ff",
+    borderRadius: 6,
     padding: 10
   },
   loadingBarBg: {
