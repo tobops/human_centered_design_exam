@@ -949,79 +949,61 @@ function getLanguageLabelByCode(code: string) {
   return match ? match.label : "English"; // English as fallback
 }
 
-// 🔄 CHANGED: Build prompt to request NORMALIZED boxes (like code 1)
+// Build prompt to request NORMALIZED boxes
 function buildVisionPrompt(imgW: number, imgH: number, label: string, level: string) {
   return `
-    Returner KUN gyldig JSON, ingen forklaringer eller tekst.
+Returner KUN gyldig JSON. Ingen forklaringer, ingen kodegjerder, ingen trailing-komma.
 
-    Oppdag maks 5 tydelig synlige, distinkte objekter i bildet og returner:
+Oppdag maks 5 tydelig synlige, distinkte objekter i bildet og returner nøyaktig dette skjemaet:
+{
+  "objects": [
     {
-      "objects": [
-        {
-          "label_NO": "...",
-          "label_TRANS": "...",
-          "desc_NO": "...",        // ≤8 ord
-          "desc_TRANS": "...",     // ≤8 ord
-          "label_grammar_no": "...",
-          "confidence": 0.95,                // 2 desimaler [0,1]
-          "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 } // normalisert til [0,1]
-        }
-      ]
+      "label_NO": "…",
+      "label_TRANS": "…",
+      "desc_NO": "…",
+      "desc_TRANS": "…",
+      "label_grammar_no": "…",
+      "confidence": 0.95,
+      "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 }
     }
+  ]
+}
 
-    Læringsnivå (CEFR): ${level} (A1, A2, B1, B2).
+Læringsnivå (CEFR): ${level} (A1, A2, B1, B2).
 
-    Regler for nivåtilpasning:
-    - A1: bruk svært vanlige og enkle substantiv; beskrivelsesfraser med 3–5 helt grunnleggende ord.
-    - A2: litt mer spesifikke substantiv; enkle adjektiv tillatt; beskrivelse opptil 6–7 ord.
-    - B1: konkrete, spesifikke substantiv; tillat sammensatte ord; beskrivelsen kan inneholde enkel preposisjonsdetalj.
-    - B2: mest presise/tekniske hverdagssubstantiv; foretrekk sammensatte ord fremfor generelle; beskrivelsen kan inkludere relasjon/kontrast – maks 8 ord.
-    - Vanskelighetsgrad øker med nivået både i ordvalg og beskrivelsens kompleksitet. Alle andre regler under gjelder fortsatt.
+Regler for nivåtilpasning:
+- A1: svært vanlige, enkle substantiv; beskrivelse 3–5 ord.
+- A2: litt mer spesifikke; enkle adjektiv ok; 6–7 ord.
+- B1: konkrete, spesifikke; sammensatte ord ok; enkel preposisjon.
+- B2: mest presise hverdagssubstantiv; foretrekk sammensatte; maks 8 ord.
 
-    Regler for avgrensningsbokser:
-    - Bildestørrelse: width=${imgW}, height=${imgH} piksler, men returner koordinater normalisert til [0,1].
-    - xc,yc er boksens sentrum; w,h er bredde/høyde; 4 desimaler; alle verdier må være innenfor [0,1].
-    - Bruk realistiske og varierte desimaler (f.eks. 0.5346 eller 0.2783); unngå runde tall.
-    - Bokser skal dekke objektet tett, ikke bakgrunn.
-    - Sortér objektene etter synlighets-sikkerhet (confidence) synkende.
-    - Ingen komma etter siste element. Kun gyldig JSON.
+Regler for bokser:
+- Bildestørrelse: width=${imgW}, height=${imgH} piksler, men returner normalisert [0,1].
+- "xc","yc" = sentrum; "w","h" = bredde/høyde; 4 desimaler; clamp til [0,1].
+- Varier desimaler (unngå runde tall). Dekke objekt tett. Sortér etter "confidence" synkende.
 
-    Regler for etiketter:
-    - Bruk spesifikke, konkrete substantiv – slik en person ville sagt det i virkeligheten.
-    - Foretrekk mer informative ord fremfor generelle (f.eks. “energidrikk” fremfor “boks”).
-    - Unngå vage ord som “ting”, “objekt”, “produkt”.
-    - "label_NO" skal være på norsk (bokmål) og tilpasset nivå ${level}.
-    - "label_TRANS" skal være samme ord oversatt til ${label}, tilpasset ${level}.
-    - Hold det til maks 1–2 ord.
-    - Ikke bruk merkenavn med mindre det er eneste tydelige identifikator.
+Regler for etiketter:
+- Spesifikke, konkrete substantiv (ikke “ting/objekt/produkt”).
+- "label_NO" på norsk, tilpasset ${level}. "label_TRANS" er samme ord på ${label}.
+- 1–2 ord. Unngå merkenavn uten klar identifikator.
 
-    Regler for ekstra læringsfrase:
-    - Legg til "desc_NO": én kort norsk frase (maks 8 ord) som beskriver hva/hvor objektet er i DETTE bildet, tilpasset ${level}.
-    - Ta gjerne med relasjon til objekter ved siden av hvis det gir mening (fortsatt ≤8 ord).
-    - Ingen merkenavn med mindre de er åpenbart synlige.
-    - Ingen komma, ingen punktum, kun små bokstaver – f.eks. "energidrikk på bordet".
-    - Legg også til "desc_TRANS": samme frase oversatt til ${label} (maks 8 ord), tilpasset ${level}.
+Regler for beskrivelser:
+- "desc_NO": én kort norsk frase (≤8 ord) om hva/hvor i DETTE bildet.
+- "desc_TRANS": samme frase på ${label} (≤8 ord).
+- Ingen komma/punktum. Kun små bokstaver.
 
-    Regler for norsk grammatikkfelt ("label_grammar_no"):
-    - Skriv ALLE former i denne rekkefølgen:
-      entall ubestemt, entall bestemt, flertall ubestemt, flertall bestemt.
-    - Bruk KUN “en” eller “et” som artikkel (bruk “en” i stedet for “ei”).
-    - Regler for flertall bestemt:
-        • Hvis flertall ubestemt ender på “ere” → flertall bestemt = “erne”  
-          (eksempel: en høyttaler, høyttaleren, høyttalere, høyttalerne)
-        • Ellers → flertall bestemt = “ene”  
-          (eksempel: en stol, stolen, stoler, stolene; en energidrikk, energidrikken, energidrikker, energidrikkene)
-    - Unngå danske former der regelen ikke tilsier det (f.eks. “energidrikkerne” er FEIL; riktig er “energidrikkene”).
-    - Hvis substantivet er uregelmessig, bruk standard bokmål (f.eks. “en bok, boken, bøker, bøkene”; “et barn, barnet, barn, barna”; “en mann, mannen, menn, mennene”).
-    - Format: én linje ren tekst, fire former atskilt med komma og mellomrom.
-      Eksempel: “en stol, stolen, stoler, stolene”.
+Regler for "label_grammar_no" (norsk bokmål):
+- Rekkefølge: entall ubestemt, entall bestemt, flertall ubestemt, flertall bestemt.
+- Bruk kun “en” eller “et” (ikke “ei”).
+- Hvis flertall ubestemt ender på “ere” → flertall bestemt “erne”.
+  Eksempel: en høyttaler, høyttaleren, høyttalere, høyttalerne
+- Ellers → flertall bestemt “ene”.
+  Eksempel: en stol, stolen, stoler, stolene; en energidrikk, energidrikken, energidrikker, energidrikkene
+- Uregelmessige: en bok, boken, bøker, bøkene; et barn, barnet, barn, barna; en mann, mannen, menn, mennene
+- Format: én linje, fire former separert med “, ” (komma+mellomrom). Ingen ekstra tekst.
 
-    Interne kontrollpunkter (for modellen):
-    - Sjekk kjønn og riktig artikkel (en/et).
-    - Sjekk flertallsendelser og uregelmessige former.
-    - Husk regelen “-ere” → “-erne”.
-    - Sørg for nøyaktig fire former, atskilt med “, ”, uten ekstra tekst.
-    `.trim();
+Kun gyldig JSON. Ikke bruk kodegjerder. Ikke legg til tekst før/etter JSON.
+`.trim();
 }
 
 // Async funciton to be sure openai can recieve prompt
