@@ -62,6 +62,9 @@ export async function speakTTS(
         body: JSON.stringify({
           text: prompt + speaktext,
           model_id: modelId, // e.g. "eleven_v3" or "eleven_multilingual_v2"
+          voice_settings: {
+            use_speaker_boost: true,
+          },
         }),
       }
     );

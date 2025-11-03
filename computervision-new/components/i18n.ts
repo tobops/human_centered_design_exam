@@ -21,6 +21,10 @@ const UI: Record<LangCode | "fallback", Dict> = {
     confidence: "Confidence",
     level: "Level",
     language: "Language",
+    startRecording: "Start Recording",
+    stopRecording: "Stop Recording",
+    saySentence: "Say the sentence:",
+    writeSentence: "Write what the person says.",
     
     question: "Question",
     listenAndRepeat: "Listen to the sentence and repeat it.",

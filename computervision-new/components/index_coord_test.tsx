@@ -179,7 +179,7 @@ async function callOpenAI(body: any, signal?: AbortSignal) {
 // REPLACE entire function with:
 async function detectWithGrid(fullUri: string) {
   // tune here if you want: more/less tiles & sizes
-  const GRID_COLS = 6, GRID_ROWS = 6;
+  const GRID_COLS = 4, GRID_ROWS = 4;
   const FULL_SIDE = 448, TILE_SIDE = 256, JPEGQ = 0.75;
 
   const { FULL, TILES, fullResized } = await makeGridTiles(

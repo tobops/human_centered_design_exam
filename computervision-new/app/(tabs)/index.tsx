@@ -22,6 +22,12 @@
 // 3. Add correct assesment to answer with score from 1-6 and explanation
 // 4. Make a button to make task with two or more items in image
 
+
+// TODO:
+// 1. Grammar
+// 2. Collect items
+// 3. Poeng
+
 /* #######################################  IMPORTS  ####################################### */
 import ModalSheet from "../../components/ui/ModalSheet";
 import { initTTS, speakTTS } from "../../components/tts";
@@ -117,6 +123,7 @@ export default function Screen() {
       desc_TRANS: any;
       label_NO: string;
       label_TRANS: string;
+      label_grammar_no: string;
       confidence: number;
       x1: number;
       y1: number;
@@ -423,6 +430,7 @@ export default function Screen() {
               label_TRANS: String(o.label_TRANS || ""),
               desc_NO: String(o.desc_NO || ""),
               desc_TRANS: String(o.desc_TRANS || ""),
+              label_grammar_no: String(o.label_grammar_no || ""),
               confidence: Number(o.confidence || 0),
               x1,
               y1,
@@ -944,55 +952,76 @@ function getLanguageLabelByCode(code: string) {
 // 🔄 CHANGED: Build prompt to request NORMALIZED boxes (like code 1)
 function buildVisionPrompt(imgW: number, imgH: number, label: string, level: string) {
   return `
-Return ONLY valid JSON, no prose.
+    Returner KUN gyldig JSON, ingen forklaringer eller tekst.
 
-Detect maximum 5 clearly visible distinct objects in the image and output:
-{
-  "objects": [
+    Oppdag maks 5 tydelig synlige, distinkte objekter i bildet og returner:
     {
-      "label_NO": "...",
-      "label_TRANS": "...",
-      "desc_NO": "...",        // ≤8 words
-      "desc_TRANS": "...",     // ≤8 words
-      "confidence": 0.95,                // 2 decimals [0,1]
-      "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 } // normalized to [0,1]
+      "objects": [
+        {
+          "label_NO": "...",
+          "label_TRANS": "...",
+          "desc_NO": "...",        // ≤8 ord
+          "desc_TRANS": "...",     // ≤8 ord
+          "label_grammar_no": "...",
+          "confidence": 0.95,                // 2 desimaler [0,1]
+          "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 } // normalisert til [0,1]
+        }
+      ]
     }
-  ]
-}
 
-Learner level (CEFR): ${level} (A1, A2, B1, B2).
+    Læringsnivå (CEFR): ${level} (A1, A2, B1, B2).
 
-Level adaptation rules:
-- A1: use very common, simple nouns; desc phrases with 3-5 very basic words.
-- A2: slightly more specific nouns; simple modifiers allowed; desc up to 6-7 words.
-- B1: specific, concrete nouns; allow compound nouns; desc can include simple prepositional detail.
-- B2: most precise/technical everyday nouns; prefer compound nouns over generic terms; desc may include relational/contrast detail—still minimum 8 words.
-- Difficulty increases with level for both label_NO/label_TRANS choice and desc phrasing; all other rules below still apply.
+    Regler for nivåtilpasning:
+    - A1: bruk svært vanlige og enkle substantiv; beskrivelsesfraser med 3–5 helt grunnleggende ord.
+    - A2: litt mer spesifikke substantiv; enkle adjektiv tillatt; beskrivelse opptil 6–7 ord.
+    - B1: konkrete, spesifikke substantiv; tillat sammensatte ord; beskrivelsen kan inneholde enkel preposisjonsdetalj.
+    - B2: mest presise/tekniske hverdagssubstantiv; foretrekk sammensatte ord fremfor generelle; beskrivelsen kan inkludere relasjon/kontrast – maks 8 ord.
+    - Vanskelighetsgrad øker med nivået både i ordvalg og beskrivelsens kompleksitet. Alle andre regler under gjelder fortsatt.
 
-Rules:
-- Image size: width=${imgW}, height=${imgH} px; but return boxes normalized [0,1].
-- xc,yc are the box center; w,h are width/height; 4 decimals; clamp inside [0,1].
-- Be creative and realistic when generating box coordinates — avoid round or repetitive values; use natural-looking decimals like 0.5346 or 0.2783 for variety and precision.
-- Boxes must tightly cover the visible object (avoid background).
-- Sort objects by confidence descending.
-- No trailing commas. Only JSON.
+    Regler for avgrensningsbokser:
+    - Bildestørrelse: width=${imgW}, height=${imgH} piksler, men returner koordinater normalisert til [0,1].
+    - xc,yc er boksens sentrum; w,h er bredde/høyde; 4 desimaler; alle verdier må være innenfor [0,1].
+    - Bruk realistiske og varierte desimaler (f.eks. 0.5346 eller 0.2783); unngå runde tall.
+    - Bokser skal dekke objektet tett, ikke bakgrunn.
+    - Sortér objektene etter synlighets-sikkerhet (confidence) synkende.
+    - Ingen komma etter siste element. Kun gyldig JSON.
 
-Rules for labels:
-- Use specific, concrete nouns that match what a human would say when pointing at it in real life.
-- Prefer more informative words over generic ones (e.g., “energidrikk” over “boks”).
-- Avoid vague terms like “ting”, “objekt”, “produkt”.
-- label_NO must be in Norwegian and reflect level ${level}.
-- label_TRANS must be the same word in ${label}, reflecting ${level}.
-- Keep it 1-2 words max.
-- Do not invent brand names unless it's the only clear identifier.
+    Regler for etiketter:
+    - Bruk spesifikke, konkrete substantiv – slik en person ville sagt det i virkeligheten.
+    - Foretrekk mer informative ord fremfor generelle (f.eks. “energidrikk” fremfor “boks”).
+    - Unngå vage ord som “ting”, “objekt”, “produkt”.
+    - "label_NO" skal være på norsk (bokmål) og tilpasset nivå ${level}.
+    - "label_TRANS" skal være samme ord oversatt til ${label}, tilpasset ${level}.
+    - Hold det til maks 1–2 ord.
+    - Ikke bruk merkenavn med mindre det er eneste tydelige identifikator.
 
-Rules for an extra learning phrase:
-- Add "desc_NO": one short Norwegian phrase (max 8 words) describing what/where the object is in THIS image; adjust complexity to ${level}.
-- Also try to explain objects beside it if possible.
-- No brand names unless obviously visible.
-- No commas, no periods, no capitalization rules—just a phrase (e.g., "energidrikk på bordet").
-- Also add "desc_TRANS": same phrase in ${label} (max 8 words), matching ${level}.
-`.trim();
+    Regler for ekstra læringsfrase:
+    - Legg til "desc_NO": én kort norsk frase (maks 8 ord) som beskriver hva/hvor objektet er i DETTE bildet, tilpasset ${level}.
+    - Ta gjerne med relasjon til objekter ved siden av hvis det gir mening (fortsatt ≤8 ord).
+    - Ingen merkenavn med mindre de er åpenbart synlige.
+    - Ingen komma, ingen punktum, kun små bokstaver – f.eks. "energidrikk på bordet".
+    - Legg også til "desc_TRANS": samme frase oversatt til ${label} (maks 8 ord), tilpasset ${level}.
+
+    Regler for norsk grammatikkfelt ("label_grammar_no"):
+    - Skriv ALLE former i denne rekkefølgen:
+      entall ubestemt, entall bestemt, flertall ubestemt, flertall bestemt.
+    - Bruk KUN “en” eller “et” som artikkel (bruk “en” i stedet for “ei”).
+    - Regler for flertall bestemt:
+        • Hvis flertall ubestemt ender på “ere” → flertall bestemt = “erne”  
+          (eksempel: en høyttaler, høyttaleren, høyttalere, høyttalerne)
+        • Ellers → flertall bestemt = “ene”  
+          (eksempel: en stol, stolen, stoler, stolene; en energidrikk, energidrikken, energidrikker, energidrikkene)
+    - Unngå danske former der regelen ikke tilsier det (f.eks. “energidrikkerne” er FEIL; riktig er “energidrikkene”).
+    - Hvis substantivet er uregelmessig, bruk standard bokmål (f.eks. “en bok, boken, bøker, bøkene”; “et barn, barnet, barn, barna”; “en mann, mannen, menn, mennene”).
+    - Format: én linje ren tekst, fire former atskilt med komma og mellomrom.
+      Eksempel: “en stol, stolen, stoler, stolene”.
+
+    Interne kontrollpunkter (for modellen):
+    - Sjekk kjønn og riktig artikkel (en/et).
+    - Sjekk flertallsendelser og uregelmessige former.
+    - Husk regelen “-ere” → “-erne”.
+    - Sørg for nøyaktig fire former, atskilt med “, ”, uten ekstra tekst.
+    `.trim();
 }
 
 // Async funciton to be sure openai can recieve prompt
