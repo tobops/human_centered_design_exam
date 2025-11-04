@@ -45,7 +45,7 @@ export async function speakTTS(
 
     const prompts = {
       no: "[snakk sakte og tydelig på norsk] ",
-      else: "[speak slow and clearly in the written language] ",
+      else: "",
     };
 
     const prompt = prompts[language as keyof typeof prompts];

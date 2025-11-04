@@ -32,6 +32,7 @@
 import ModalSheet from "../../components/ui/ModalSheet";
 import { initTTS, speakTTS } from "../../components/tts";
 import TaskSheet, { type DetectedItem } from "../../components/ui/TaskSheet";
+import ItemDexModal from "../../components/ui/ItemDexModal";
 import { t, languageNameFromCode } from "../../components/i18n";
 import { flagFor } from "../../components/flags";
 
@@ -54,7 +55,9 @@ import {
 import * as ImageManipulator from "expo-image-manipulator";
 import { MaterialIcons } from "@expo/vector-icons";
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
+import Feather from '@expo/vector-icons/Feather';
 import Svg, { Rect, Path, Text as SvgText } from "react-native-svg";
+import * as FileSystem from "expo-file-system/legacy";
 
 /* #######################################  CONSTRAINTS / CONFIG  ####################################### */
 
@@ -164,6 +167,14 @@ export default function Screen() {
   const [taskOpen, setTaskOpen] = useState(false);
   const [taskItem, setTaskItem] = useState<DetectedItem | null>(null);
 
+  // ItemDex state
+  const [itemDexOpen, setItemDexOpen] = useState(false)
+
+  // Notification toast state
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationData, setNotificationData] = useState({ itemsAdded: 0, pointsEarned: 0 });
+  const notificationAnim = useRef(new Animated.Value(-100)).current; // Start off-screen
+
   //Button Click Animation
   const buttonAnim = useRef(new Animated.Value(1)).current;
 
@@ -193,6 +204,114 @@ export default function Screen() {
     }
     const elapsed = ((now - startTimeRef.current) / 1000).toFixed(3); //seconds
     console.log(`[+${elapsed}s] ${msg}`);
+  };
+
+  // Save items to user_data.json
+  const saveItemsToUserData = async (detections: Array<{
+    label_NO: string;
+    label_TRANS: string;
+    desc_NO: string;
+    desc_TRANS: string;
+    label_grammar_no: string;
+  }>, level: string, targetLang: string) => {
+    try {
+      const DATA_PATH = `${(FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory}user_data.json`;
+
+      console.log("📥 Saving items to user_data.json...");
+
+      // Read existing data
+      const fileInfo = await FileSystem.getInfoAsync(DATA_PATH);
+      let userData: any = { points: 0, collected_items: [] };
+
+      if (fileInfo.exists) {
+        const content = await FileSystem.readAsStringAsync(DATA_PATH, {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+        userData = JSON.parse(content);
+      }
+
+      // Track new items added
+      let newItemsCount = 0;
+
+      // Add new detections (prevent duplicates)
+      for (const det of detections) {
+        // Check if item already exists (by label_NO)
+        const exists = userData.collected_items.some(
+          (item: any) => item.label_NO.toLowerCase() === det.label_NO.toLowerCase()
+        );
+
+        if (!exists) {
+          // Generate unique ID
+          const timestamp = Date.now();
+          const randomSuffix = Math.random().toString(36).substring(2, 6);
+          const newId = `item_${timestamp}_${randomSuffix}`;
+
+          // Add new item
+          userData.collected_items.push({
+            id: newId,
+            label_NO: det.label_NO,
+            label_TRANS: det.label_TRANS,
+            desc_NO: det.desc_NO,
+            desc_TRANS: det.desc_TRANS,
+            grammar_NO: det.label_grammar_no,
+            collected_at: new Date().toISOString(),
+            isFavorite: false,
+            level: level, // A1, A2, B1, B2
+            viewed: false, // Mark as not viewed initially
+            targetLang: targetLang, // Language code
+          });
+
+          newItemsCount++;
+          console.log(`✅ Added new item: ${det.label_NO} (${level})`);
+        } else {
+          console.log(`⏭️ Skipped duplicate: ${det.label_NO}`);
+        }
+      }
+
+      // Award points (10 points per new item)
+      if (newItemsCount > 0) {
+        userData.points += newItemsCount * 10;
+        console.log(`💎 Awarded ${newItemsCount * 10} points! Total: ${userData.points}`);
+      }
+
+      // Write back to file
+      await FileSystem.writeAsStringAsync(
+        DATA_PATH,
+        JSON.stringify(userData, null, 2),
+        { encoding: FileSystem.EncodingType.UTF8 }
+      );
+
+      console.log(`✅ Saved! Added ${newItemsCount} new items`);
+      return { newItemsCount, pointsEarned: newItemsCount * 10 };
+    } catch (err) {
+      console.error("❌ Error saving items to user_data.json:", err);
+      return { newItemsCount: 0, pointsEarned: 0 };
+    }
+  };
+
+  // Show notification toast
+  const showNotificationToast = (itemsAdded: number, pointsEarned: number) => {
+    setNotificationData({ itemsAdded, pointsEarned });
+    setShowNotification(true);
+
+    // Slide down animation
+    Animated.spring(notificationAnim, {
+      toValue: 60,
+      useNativeDriver: true,
+      tension: 50,
+      friction: 8,
+    }).start();
+
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      Animated.timing(notificationAnim, {
+        toValue: -100,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => {
+        setShowNotification(false);
+      });
+    }, 3000);
   };
 
   // Flash
@@ -245,7 +364,7 @@ export default function Screen() {
     onPress: () => void;
 
     // Show MaterialIcon?
-    showIcon?: bool;
+    showIcon?: boolean;
     iconLibrary?: "MaterialIcons" | "FontAwesome5";
     // MaterialIcon Name?
     iconName?: keyof typeof MaterialIcons.glyphMap | string;
@@ -445,6 +564,14 @@ export default function Screen() {
         setDetections(px);
         logWithTime(`DETECTIONS = ${px.length} objects detected`); // Log number of detections
 
+        // Save items to user_data.json (with duplicate prevention)
+        const saveResult = await saveItemsToUserData(px, targetLevel, targetLang);
+
+        // Show notification if items were added
+        if (saveResult.newItemsCount > 0) {
+          showNotificationToast(saveResult.newItemsCount, saveResult.pointsEarned);
+        }
+
         setModalOpen(true); // Open modal with vocabulary
 
         logWithTime("Finished Object Detection");
@@ -582,6 +709,28 @@ export default function Screen() {
             pointerEvents="none"
             style={[styles.flash, { opacity: flashAnim }]}
           />
+
+          {/* Notification Toast */}
+          {showNotification && (
+            <Animated.View
+              style={[
+                styles.notificationToast,
+                { transform: [{ translateY: notificationAnim }] }
+              ]}
+            >
+              <View style={styles.notificationContent}>
+                <FontAwesome5 name="box" size={20} color="#4ade80" />
+                <View style={styles.notificationText}>
+                  <Text style={styles.notificationTitle}>
+                    +{notificationData.itemsAdded} Item{notificationData.itemsAdded !== 1 ? 's' : ''} Added!
+                  </Text>
+                  <Text style={styles.notificationSubtitle}>
+                    +{notificationData.pointsEarned} Points
+                  </Text>
+                </View>
+              </View>
+            </Animated.View>
+          )}
 
           {/* Loading Bar */}
           {loading && (
@@ -730,7 +879,22 @@ export default function Screen() {
         onSelect={setTargetLevel}
         targetLang={targetLang}
       />
+      <Pressable
+        onPress={() => setItemDexOpen(true)}
+        style={styles.itemDexFab}
+        android_ripple={{ color: "#2a2a2a", radius: 28 }}
+      >
+        <Text style={styles.itemDexFabTxt}><Feather name="box" size={34} color="white" /></Text>
+      </Pressable>
+
       <CaptureButton onPress={handleCapture} />
+
+      {/* ItemDex Modal in separate file */}
+      <ItemDexModal
+        visible={itemDexOpen}
+        onClose={() => setItemDexOpen(false)}
+        speak={(text, lang) => speakTTS(text, lang)}
+      />
     </View>
   );
 }
@@ -917,6 +1081,7 @@ function ChangeDiffButton ({
   );
 }
 
+
 // ASYNC FUNCTION TO RESIZE IMAGE FOR SENDING TO AI
 async function resizeToMaxSide(
   photoUri: string,
@@ -993,14 +1158,22 @@ Regler for beskrivelser:
 - Ingen komma/punktum. Kun små bokstaver.
 
 Regler for "label_grammar_no" (norsk bokmål):
-- Rekkefølge: entall ubestemt, entall bestemt, flertall ubestemt, flertall bestemt.
-- Bruk kun “en” eller “et” (ikke “ei”).
-- Hvis flertall ubestemt ender på “ere” → flertall bestemt “erne”.
+- VIKTIG: Bruk RIKTIG grammatisk kjønn (en/et). Dobbelsjekk kjønnet for hvert ord.
+- Rekkefølge: "ARTIKKEL SUBSTANTIV, bestemt form, flertall, flertall bestemt"
+- Format: "en sofa, sofaen, sofaer, sofaene" (IKKE "en, sofaen, sofaer, sofaene")
+- ALLTID inkluder substantivet i første form: "[artikkel] [ord]"
+- Bruk kun "en" eller "et" (ikke "ei").
+- Hvis flertall ubestemt ender på "ere" → flertall bestemt "erne".
   Eksempel: en høyttaler, høyttaleren, høyttalere, høyttalerne
-- Ellers → flertall bestemt “ene”.
+- Ellers → flertall bestemt "ene".
   Eksempel: en stol, stolen, stoler, stolene; en energidrikk, energidrikken, energidrikker, energidrikkene
 - Uregelmessige: en bok, boken, bøker, bøkene; et barn, barnet, barn, barna; en mann, mannen, menn, mennene
-- Format: én linje, fire former separert med “, ” (komma+mellomrom). Ingen ekstra tekst.
+- Common words MUST have correct gender:
+  * "en sofa" (NOT "et sofa")
+  * "en ladekabel" (NOT "et ladekabel")
+  * "et bord" (NOT "en bord")
+  * "en lampe" (NOT "et lampe")
+- Én linje, fire former separert med ", " (komma+mellomrom). Første form ALLTID med substantiv.
 
 Kun gyldig JSON. Ikke bruk kodegjerder. Ikke legg til tekst før/etter JSON.
 `.trim();
@@ -1198,6 +1371,44 @@ const styles = StyleSheet.create({
     height: 8,
     backgroundColor: "#3b82f6",
   },
+
+  // Notification Toast Styles
+  notificationToast: {
+    position: "absolute",
+    top: 0,
+    left: 20,
+    right: 20,
+    zIndex: 1000,
+    backgroundColor: "rgba(11,11,11,0.95)",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(74,222,128,0.3)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  notificationContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  notificationText: {
+    flex: 1,
+  },
+  notificationTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+  notificationSubtitle: {
+    color: "#4ade80",
+    fontSize: 14,
+    fontWeight: "600",
+  },
   detectionsWrap: {
     paddingBottom: 32,
   },
@@ -1289,6 +1500,19 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff", // base blå
     borderRadius: 8,
   },
+  itemDexFab: {
+    position: "absolute",
+    left: 85,
+    bottom: 45, // over capture-knappen
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)"
+  },
+
+  itemDexFabTxt: { color: "#fff", fontWeight: "700", letterSpacing: 0.3 }
   
 
 });
