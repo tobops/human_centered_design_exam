@@ -1,3 +1,8 @@
+/**
+ * Text-to-Speech helper that streams audio from ElevenLabs and plays it via Expo AV.
+ * Provides initialization helpers plus a convenience wrapper for playing prompts.
+ */
+
 import { Audio } from "expo-av";
 import * as FileSystem from "expo-file-system/legacy";
 import { encode as btoa } from "base-64";
@@ -13,12 +18,19 @@ let initialized = false;
 let busy = false;
 let soundRef: Audio.Sound | null = null;
 
+/**
+ * Prepares the Expo AV layer so speech can play even in silent mode.
+ */
 export async function initTTS() {
   if (initialized) return;
   await Audio.setAudioModeAsync({ playsInSilentModeIOS: true });
   initialized = true;
 }
 
+/**
+ * Streams TTS audio from ElevenLabs and plays it. Ensures only one
+ * request runs at a time to avoid overlapping audio.
+ */
 export async function speakTTS(
   speaktext: string,
   language: string,
@@ -44,7 +56,7 @@ export async function speakTTS(
     const modelId = opts?.modelId ?? DEFAULT_MODEL_ID;
 
     const prompts = {
-      no: "[snakk sakte og tydelig på norsk] ",
+      no: "[speak slowly and clearly in Norwegian] ",
       else: "",
     };
 

@@ -1,4 +1,9 @@
-// components/ui/ModalSheet.tsx
+/**
+ * ModalSheet
+ * ----------
+ * Reanimated bottom sheet component that supports peek/expanded states,
+ * drag gestures, and progress callbacks for embedding custom content.
+ */
 import React, { useEffect } from "react";
 import { StyleSheet, View, Dimensions, Pressable } from "react-native";
 import Animated, {
@@ -17,20 +22,20 @@ type Props = {
   open: boolean;
   onChange: (v: boolean) => void;
 
-  /** Hvor mye av arket som er synlig i "peek"-tilstand (0.12 = 12% av skjermen) */
+  /** Portion of the sheet visible in the peek state (0.12 = 12% of the screen) */
   peekRatio?: number;                 // default 0.12
-  /** Hvor stor del av veien opp man må dra for å snappe helt åpen (0..1) */
+  /** How far upward the user must drag before snapping fully open (0..1) */
   snapUpThreshold?: number;           // default 0.35
-  /** Hvor stor del av veien ned man må dra for å snappe tilbake til peek (0..1) */
+  /** How far downward the user must drag before snapping back to peek (0..1) */
   snapDownThreshold?: number;         // default 0.35
-  /** Fart (px/s) som “overstyrer” og tvinger snap opp/ned */
+  /** Velocity (px/s) that overrides position and forces a snap */
   velocityThreshold?: number;         // default 1000
-  /** Fjærfølelse */
+  /** Spring feel */
   springStiffness?: number;           // default 220
   springDamping?: number;             // default 22
-  /** Tillat å lukke helt ved å dra forbi peek? */
+  /** Allow the sheet to close completely when pulled past the peek point? */
   canClose?: boolean;                 // default false
-  /** Valgfri topp-margin når helt åpen (for safe-area) */
+  /** Optional top inset when fully open (e.g., safe-area padding) */
   topInset?: number;                  // default 0
   /** progress callback (0 = fully open, 1 = at peek; >1 when moving towards closed) */
   onProgress?: (progress: number) => void;
@@ -38,6 +43,10 @@ type Props = {
   children?: React.ReactNode;
 };
 
+/**
+ * Declarative bottom sheet that animates between peek and expanded states,
+ * exposing plenty of knobs (springs, thresholds, insets) for the parent screen.
+ */
 export default function ModalSheet({
   open,
   onChange,
@@ -54,13 +63,13 @@ export default function ModalSheet({
 }: Props) {
   const { height: SCREEN_H } = Dimensions.get("window");
 
-  // Y=0 er helt åpen (øverst). Y øker nedover.
-  const FULL_OPEN_Y = topInset;                   // helt åpen pos
-  const PEEK_Y = SCREEN_H * (1 - peekRatio);     // kollapset pos
-  const CLOSED_Y = SCREEN_H;                      // helt skjult
+  // Y=0 means fully open (at the top). Y increases as the sheet moves downward.
+  const FULL_OPEN_Y = topInset;                   // fully open position
+  const PEEK_Y = SCREEN_H * (1 - peekRatio);     // collapsed position
+  const CLOSED_Y = SCREEN_H;                      // completely hidden
   const translateY = useSharedValue(CLOSED_Y);
 
-  // Åpne/lukke fra prop
+  // Respond to the controlled `open` prop
   useEffect(() => {
     if (open) {
       translateY.value = withSpring(PEEK_Y, { stiffness: springStiffness, damping: springDamping });
@@ -70,7 +79,7 @@ export default function ModalSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, PEEK_Y, CLOSED_Y, springStiffness, springDamping]);
 
-  // Drag-gest
+  // Drag gesture configuration
   const pan = Gesture.Pan()
     .onChange((e) => {
       const next = translateY.value + e.changeY;
@@ -129,7 +138,7 @@ export default function ModalSheet({
     transform: [{ translateY: translateY.value }],
   }));
 
-  // Bakgrunns-dim (0 ved peek, ~0.35 ved full åpen)
+  // Background dimming (0 at peek, ~0.35 when fully open)
   const backdropStyle = useAnimatedStyle(() => {
     const opacity = interpolate(
       translateY.value,
@@ -140,7 +149,7 @@ export default function ModalSheet({
     return { opacity };
   });
 
-  // Trykk på bakgrunn → tilbake til peek (eller lukk helt hvis canClose)
+  // Tap on the backdrop → return to peek (or close completely if canClose)
   const onBackdropPress = () => {
     if (canClose) {
       translateY.value = withTiming(CLOSED_Y, { duration: 180 }, (finished) => {

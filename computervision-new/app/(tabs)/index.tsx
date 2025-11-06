@@ -26,17 +26,27 @@
 // TODO:
 // 1. Grammar
 // 2. Collect items
-// 3. Poeng
+// 3. Points
+
+/**
+ * Screen Overview:
+ * - Hosts the camera experience, capture workflow, and detection overlay.
+ * - Coordinates modals (ItemDex, tasks, leaderboard) and notification toasts.
+ * - Persists collected items and user points, keeping leaderboard data in sync.
+ */
 
 /* #######################################  IMPORTS  ####################################### */
 import ModalSheet from "../../components/ui/ModalSheet";
 import { initTTS, speakTTS } from "../../components/tts";
 import TaskSheet, { type DetectedItem } from "../../components/ui/TaskSheet";
 import ItemDexModal from "../../components/ui/ItemDexModal";
+import LeaderBoardModal from "../../components/ui/LeaderBoardModal";
+import BUNDLED_DEFAULT from "../../user_data.json";
+import { setUserLeaderboardStats } from "../../lib/leaderboardStorage";
 import { t, languageNameFromCode } from "../../components/i18n";
 import { flagFor } from "../../components/flags";
 
-import React, { useRef, useState, useEffect } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import 'react-native-gesture-handler';
 import {
@@ -48,6 +58,7 @@ import {
   Image,
   Dimensions,
   ScrollView,
+  Modal,
   ViewStyle,
   StyleProp,
   TextStyle
@@ -102,17 +113,82 @@ const LEVELS = [
 ];
 
 const BUBBLE = {
-  font: 12, // tekststørrelse
-  padX: 15, // horisontal padding
-  padY: 6, // vertikal padding
-  minW: 70, // min bredde
-  maxW: 240, // maks bredde
-  radius: 8, // hjørner
-  tip: 12, // lengde på spiss
+  font: 12, // font size
+  padX: 15, // horizontal padding
+  padY: 6, // vertical padding
+  minW: 70, // minimum width
+  maxW: 240, // maximum width
+  radius: 8, // corner radius
+  tip: 12, // pointer length
   stroke: "#3b82f6",
   strokeW: 3,
 };
 
+type UserData = {
+  points: number;
+  collected_items: any[];
+  [key: string]: any;
+};
+
+type NotificationPayload = {
+  title: string;
+  subtitle?: string;
+  icon?: string;
+};
+
+const USER_DATA_PATH =
+  `${(FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory}user_data.json`;
+
+function cloneDefaultUserData(): UserData {
+  const clone = JSON.parse(JSON.stringify(BUNDLED_DEFAULT ?? {}));
+  return {
+    ...clone,
+    points: typeof clone.points === "number" ? clone.points : 0,
+    collected_items: Array.isArray(clone.collected_items) ? clone.collected_items : [],
+  };
+}
+
+async function ensureUserDataFile() {
+  try {
+    const info = await FileSystem.getInfoAsync(USER_DATA_PATH);
+    if (!info.exists) {
+      const seed = cloneDefaultUserData();
+      await FileSystem.writeAsStringAsync(
+        USER_DATA_PATH,
+        JSON.stringify(seed, null, 2),
+        { encoding: FileSystem.EncodingType.UTF8 }
+      );
+    }
+  } catch (err) {
+    console.error("ensureUserDataFile error:", err);
+  }
+}
+
+async function readUserDataFile(): Promise<UserData> {
+  try {
+    await ensureUserDataFile();
+    const content = await FileSystem.readAsStringAsync(USER_DATA_PATH, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    const parsed = JSON.parse(content);
+    return {
+      ...parsed,
+      points: typeof parsed.points === "number" ? parsed.points : 0,
+      collected_items: Array.isArray(parsed.collected_items) ? parsed.collected_items : [],
+    };
+  } catch (err) {
+    console.error("Failed to read user data:", err);
+    return cloneDefaultUserData();
+  }
+}
+
+async function writeUserDataFile(data: UserData) {
+  await FileSystem.writeAsStringAsync(
+    USER_DATA_PATH,
+    JSON.stringify(data, null, 2),
+    { encoding: FileSystem.EncodingType.UTF8 }
+  );
+}
 
 /* #######################################  COMPONENT  ####################################### */
 
@@ -170,10 +246,18 @@ export default function Screen() {
   // ItemDex state
   const [itemDexOpen, setItemDexOpen] = useState(false)
 
+  // Leaderboard state
+  const [leaderBoardOpen, setLeaderBoardOpen] = useState(false);
+
   // Notification toast state
   const [showNotification, setShowNotification] = useState(false);
-  const [notificationData, setNotificationData] = useState({ itemsAdded: 0, pointsEarned: 0 });
+  const [notificationData, setNotificationData] = useState<NotificationPayload>({
+    title: "",
+    subtitle: "",
+    icon: "box",
+  });
   const notificationAnim = useRef(new Animated.Value(-100)).current; // Start off-screen
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   //Button Click Animation
   const buttonAnim = useRef(new Animated.Value(1)).current;
@@ -206,7 +290,10 @@ export default function Screen() {
     console.log(`[+${elapsed}s] ${msg}`);
   };
 
-  // Save items to user_data.json
+  /**
+   * Persists newly detected items to `user_data.json`, awarding points and
+   * syncing the leaderboard once duplicates have been filtered out.
+   */
   const saveItemsToUserData = async (detections: Array<{
     label_NO: string;
     label_TRANS: string;
@@ -215,20 +302,9 @@ export default function Screen() {
     label_grammar_no: string;
   }>, level: string, targetLang: string) => {
     try {
-      const DATA_PATH = `${(FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory}user_data.json`;
-
       console.log("📥 Saving items to user_data.json...");
 
-      // Read existing data
-      const fileInfo = await FileSystem.getInfoAsync(DATA_PATH);
-      let userData: any = { points: 0, collected_items: [] };
-
-      if (fileInfo.exists) {
-        const content = await FileSystem.readAsStringAsync(DATA_PATH, {
-          encoding: FileSystem.EncodingType.UTF8,
-        });
-        userData = JSON.parse(content);
-      }
+      const userData = await readUserDataFile();
 
       // Track new items added
       let newItemsCount = 0;
@@ -275,13 +351,17 @@ export default function Screen() {
       }
 
       // Write back to file
-      await FileSystem.writeAsStringAsync(
-        DATA_PATH,
-        JSON.stringify(userData, null, 2),
-        { encoding: FileSystem.EncodingType.UTF8 }
-      );
+      await writeUserDataFile(userData);
 
       console.log(`✅ Saved! Added ${newItemsCount} new items`);
+      const collectedCount = Array.isArray(userData.collected_items)
+        ? userData.collected_items.length
+        : 0;
+      await setUserLeaderboardStats({
+        points: userData.points ?? 0,
+        streak: Math.max(1, Math.round(collectedCount / 2)),
+        weeklyDelta: Math.max(10, collectedCount * 6),
+      });
       return { newItemsCount, pointsEarned: newItemsCount * 10 };
     } catch (err) {
       console.error("❌ Error saving items to user_data.json:", err);
@@ -289,12 +369,41 @@ export default function Screen() {
     }
   };
 
-  // Show notification toast
-  const showNotificationToast = (itemsAdded: number, pointsEarned: number) => {
-    setNotificationData({ itemsAdded, pointsEarned });
+  const awardTaskScorePoints = useCallback(async (score: number) => {
+    const normalized = Math.max(0, Math.round(Number(score) || 0));
+    if (normalized <= 0) {
+      return 0;
+    }
+
+    try {
+      const userData = await readUserDataFile();
+      userData.points = (userData.points ?? 0) + normalized;
+      await writeUserDataFile(userData);
+      const collectedCount = Array.isArray(userData.collected_items)
+        ? userData.collected_items.length
+        : 0;
+      await setUserLeaderboardStats({
+        points: userData.points ?? normalized,
+        streak: Math.max(1, Math.round(collectedCount / 2)),
+        weeklyDelta: Math.max(10, collectedCount * 6),
+      });
+      console.log(`🏆 Awarded ${normalized} task points! Total: ${userData.points}`);
+      return normalized;
+    } catch (err) {
+      console.error("❌ Error awarding task points:", err);
+      return 0;
+    }
+  }, []);
+
+  /**
+   * Displays the unified toast overlay with the provided title/subtitle/icon.
+   */
+  const showNotificationToast = useCallback(({ title, subtitle = "", icon = "bell" }: NotificationPayload) => {
+    setNotificationData({ title, subtitle, icon });
     setShowNotification(true);
 
     // Slide down animation
+    notificationAnim.setValue(-100);
     Animated.spring(notificationAnim, {
       toValue: 60,
       useNativeDriver: true,
@@ -312,7 +421,65 @@ export default function Screen() {
         setShowNotification(false);
       });
     }, 3000);
-  };
+  }, [notificationAnim]);
+
+  /**
+   * When grading finishes, award the user points and pop the delayed toast.
+   */
+  const handleTaskComplete = useCallback(async ({ score }: { score: number }) => {
+    const pointsAdded = await awardTaskScorePoints(score);
+    if (pointsAdded > 0) {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = setTimeout(() => {
+        showNotificationToast({
+          title: "Task Complete!",
+          subtitle: `+${pointsAdded} Points (Score ${pointsAdded}/6)`,
+          icon: "tasks",
+        });
+        toastTimerRef.current = null;
+      }, 500);
+    }
+  }, [awardTaskScorePoints, showNotificationToast]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const notificationOverlay = (
+    <Modal
+      transparent
+      visible={showNotification}
+      animationType="none"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+    >
+      <View style={styles.notificationModalWrap} pointerEvents="box-none">
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.notificationToast,
+            { transform: [{ translateY: notificationAnim }] },
+          ]}
+        >
+          <View style={styles.notificationContent}>
+            <FontAwesome5 name={notificationData.icon ?? "bell"} size={20} color="#4ade80" />
+            <View style={styles.notificationText}>
+              <Text style={styles.notificationTitle}>{notificationData.title}</Text>
+              {!!notificationData.subtitle && (
+                <Text style={styles.notificationSubtitle}>{notificationData.subtitle}</Text>
+              )}
+            </View>
+          </View>
+        </Animated.View>
+      </View>
+    </Modal>
+  ) ; null;
 
   // Flash
   const flash = () => {
@@ -569,7 +736,11 @@ export default function Screen() {
 
         // Show notification if items were added
         if (saveResult.newItemsCount > 0) {
-          showNotificationToast(saveResult.newItemsCount, saveResult.pointsEarned);
+          showNotificationToast({
+            title: `+${saveResult.newItemsCount} Item${saveResult.newItemsCount !== 1 ? "s" : ""} Added!`,
+            subtitle: `+${saveResult.pointsEarned} Points`,
+            icon: "box",
+          });
         }
 
         setModalOpen(true); // Open modal with vocabulary
@@ -596,9 +767,12 @@ export default function Screen() {
   if (!permission) {
     // if not-permission
     return (
-      <Center>
-        <Text>{t(targetLang, "askCamPerm")}</Text>
-      </Center>
+      <>
+        {notificationOverlay}
+        <Center>
+          <Text>{t(targetLang, "askCamPerm")}</Text>
+        </Center>
+      </>
     );
   }
 
@@ -607,12 +781,15 @@ export default function Screen() {
     return (
       console.log("Return = Permission"),
       (
-        <Center>
-          <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
-          <Pressable style={styles.btn} onPress={requestPermission}>
-            <Text style={styles.btnTxt}>{t(targetLang, "giveAccess")}</Text>
-          </Pressable>
-        </Center>
+        <>
+          {notificationOverlay}
+          <Center>
+            <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
+            <Pressable style={styles.btn} onPress={requestPermission}>
+              <Text style={styles.btnTxt}>{t(targetLang, "giveAccess")}</Text>
+            </Pressable>
+          </Center>
+        </>
       )
     );
   }
@@ -622,7 +799,9 @@ export default function Screen() {
     return (
       console.log("Return = Preview"),
       (
-        <View style={StyleSheet.absoluteFill}>
+        <>
+          {notificationOverlay}
+          <View style={StyleSheet.absoluteFill}>
           {/* Image Preview */}
           <Image
             source={{ uri: previewUri }}
@@ -710,28 +889,6 @@ export default function Screen() {
             style={[styles.flash, { opacity: flashAnim }]}
           />
 
-          {/* Notification Toast */}
-          {showNotification && (
-            <Animated.View
-              style={[
-                styles.notificationToast,
-                { transform: [{ translateY: notificationAnim }] }
-              ]}
-            >
-              <View style={styles.notificationContent}>
-                <FontAwesome5 name="box" size={20} color="#4ade80" />
-                <View style={styles.notificationText}>
-                  <Text style={styles.notificationTitle}>
-                    +{notificationData.itemsAdded} Item{notificationData.itemsAdded !== 1 ? 's' : ''} Added!
-                  </Text>
-                  <Text style={styles.notificationSubtitle}>
-                    +{notificationData.pointsEarned} Points
-                  </Text>
-                </View>
-              </View>
-            </Animated.View>
-          )}
-
           {/* Loading Bar */}
           {loading && (
             <View style={styles.loadingWrap}>
@@ -799,7 +956,7 @@ export default function Screen() {
                           iconName="multitrack-audio"
                           style={styles.ttsButton}
                         />
-                        {/* Future Task button (can open exercises or extra info) */}
+                        {/* Task button  */}
                         <TTSButton
                           onPress={() => {
                             setTaskItem(det);
@@ -851,8 +1008,10 @@ export default function Screen() {
               // TODO: start oppgaveflyt her
               console.log("Start task for:", it.label_NO, level, lang);
             }}
+            onTaskComplete={handleTaskComplete}
           />
-        </View>
+          </View>
+        </>
       )
     );
   }
@@ -860,14 +1019,16 @@ export default function Screen() {
   // 4. Given Camera Permission: Show live camera (back)
   console.log("Returned = Screen  |  Language = ", targetLang, "  |  Level = ", targetLevel);
   return (
-    <View style={styles.root}>
+    <>
+      {notificationOverlay}
+      <View style={styles.root}>
       <CameraView
         ref={cameraRef}
         style={StyleSheet.absoluteFill}
         facing="back"
         zoom={0.001}
       />
-      {/* språkmeny + capture */}
+      {/* Language selectors + capture control */}
       <ChangeLanguageButton
         languages={LANGUAGES}
         selected={targetLang}
@@ -887,6 +1048,16 @@ export default function Screen() {
         <Text style={styles.itemDexFabTxt}><Feather name="box" size={34} color="white" /></Text>
       </Pressable>
 
+      <Pressable
+        onPress={() => setLeaderBoardOpen(true)}
+        style={styles.leaderBoardFab}
+        android_ripple={{ color: "#2a2a2a", radius: 28 }}
+      >
+        <Text style={styles.leaderBoardFabTxt}>
+          <FontAwesome5 name="medal" size={30} color="white" />
+        </Text>
+      </Pressable>
+
       <CaptureButton onPress={handleCapture} />
 
       {/* ItemDex Modal in separate file */}
@@ -895,7 +1066,12 @@ export default function Screen() {
         onClose={() => setItemDexOpen(false)}
         speak={(text, lang) => speakTTS(text, lang)}
       />
+      <LeaderBoardModal
+        visible={leaderBoardOpen}
+        onClose={() => setLeaderBoardOpen(false)}
+      />
     </View>
+    </>
   );
 }
 
@@ -1373,6 +1549,10 @@ const styles = StyleSheet.create({
   },
 
   // Notification Toast Styles
+  notificationModalWrap: {
+    flex: 1,
+    justifyContent: "flex-start",
+  },
   notificationToast: {
     position: "absolute",
     top: 0,
@@ -1493,18 +1673,18 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.25)",
   },
   blueBg: {
-    backgroundColor: "#3b82f6", // base blå
+    backgroundColor: "#3b82f6", // base blue
     borderRadius: 8,
   },
   whiteBg: {
-    backgroundColor: "#fff", // base blå
+    backgroundColor: "#fff", // base blue
     borderRadius: 8,
   },
   itemDexFab: {
     position: "absolute",
     left: 85,
     bottom: 45, // over capture-knappen
-    backgroundColor: "rgba(0,0,0,0.55)",
+    backgroundColor: "rgba(0,0,0,0.35)",
     paddingHorizontal: 8,
     paddingVertical: 8,
     borderRadius: 12,
@@ -1512,7 +1692,19 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.15)"
   },
 
-  itemDexFabTxt: { color: "#fff", fontWeight: "700", letterSpacing: 0.3 }
+  itemDexFabTxt: { color: "#fff", fontWeight: "700", letterSpacing: 0.3 },
+  leaderBoardFab: {
+    position: "absolute",
+    right: 85,
+    bottom: 45,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)"
+  },
+  leaderBoardFabTxt: { color: "#fff", fontWeight: "700", letterSpacing: 0.3 }
   
 
 });

@@ -1,3 +1,11 @@
+/**
+ * TaskSheet
+ * ---------
+ * Provides the learning task workflow: generates exercises, captures answers,
+ * submits them for grading, and presents structured feedback including per-task
+ * scores and audio transcription support.
+ */
+
 import React, { useState } from "react";
 import {
   Modal,
@@ -42,19 +50,26 @@ type TaskSheetProps = {
   // Data for oppgaven
   item: DetectedItem | null;
 
-  // Språk og nivå
+  // Language & level
   targetLang: string;   // f.eks. "en", "es"
   level: "A1" | "A2" | "B1" | "B2";
 
   // Tale-funksjon (injiseres fra parent)
   speak: (text: string, language: "no" | "else") => void;
 
-  // Når bruker starter en oppgave
+  // Fired when the user starts a task
   onStartTask?: (item: DetectedItem, options: { level: TaskSheetProps["level"]; lang: string }) => void;
+
+  // Fired once tasks are graded and feedback is ready
+  onTaskComplete?: (result: { score: number }) => void;
 };
 
+/**
+ * Drives the capture/grade feedback loop for generated tasks, including audio capture,
+ * text input, and rendering the grading modal with per-task breakdowns.
+ */
 export default function TaskSheet(props: TaskSheetProps) {
-  const { visible, onClose, item, targetLang, level, speak } = props;
+  const { visible, onClose, item, targetLang, level, speak, onTaskComplete } = props;
   const [currentTasks, setCurrentTasks] = useState<ParsedTask[]>([]);
   
   const [questionIndex, setQuestionIndex] = useState(0);
@@ -196,10 +211,10 @@ export default function TaskSheet(props: TaskSheetProps) {
       return;
     }
 
-    // Ferdig med alle spørsmål:
+    // All questions answered:
     console.log("All questions answered:", nextAnswers);
 
-    // 1) START spinner (på Modal #2 eller globalt)
+    // 1) Start spinner (either on Modal #2 or globally)
     setFeedbackLoading(true);
     console.log("Grading...")
 
@@ -209,6 +224,13 @@ export default function TaskSheet(props: TaskSheetProps) {
       console.log("Finished grading")
 
       setFeedback(fb);
+      if (fb && typeof fb.overall_score === "number" && fb.overall_score > 0) {
+        try {
+          onTaskComplete?.({ score: fb.overall_score });
+        } catch (err) {
+          console.error("onTaskComplete callback failed:", err);
+        }
+      }
       
       setStage("feedback")
       console.log("Closed task modal")
@@ -310,7 +332,7 @@ export default function TaskSheet(props: TaskSheetProps) {
                   </Text>
                 )}
                 <Text style={styles.meta}>
-                  Nivå/{t(targetLang, "level")}: {level} • Språk/
+                Nivå/{t(targetLang, "level")}: {level} • Språk/
                   {t(targetLang, "language")}: {targetLang.toUpperCase()}
                 </Text>
 
@@ -832,13 +854,13 @@ function mapMcAnswerToText(task: ParsedTask, raw: "A"|"B"|"C"|null|undefined) {
 
 function buildExpandedTasks(tasks: ParsedTask[], user_answers: Record<number, any>) {
   return tasks.map((t, i) => {
-    const raw = user_answers[i]; // kan være "A"/"B"/"C" eller tekst/(audio)
+    const raw = user_answers[i]; // may be "A"/"B"/"C" or free text/(audio)
     const user_text_for_mc = t.mode === "multiple" ? mapMcAnswerToText(t, raw) : null;
 
     return {
       index: i,
       mode: t.mode,
-      // Spørsmål/innhold brukt i vurderingen
+      // Prompt content used during evaluation
       question_no:
         t.mode === "speak" ? (t.speak_text_no ?? "") :
         t.mode === "listen" ? (t.listen_text_no ?? "") :
@@ -854,7 +876,7 @@ function buildExpandedTasks(tasks: ParsedTask[], user_answers: Record<number, an
       user_answer_raw: raw ?? "",
       user_answer_text: user_text_for_mc ?? (typeof raw === "string" ? raw : String(raw ?? "")),
 
-      // Nivåhjelp
+      // Level hints
       level_hint: {
         A1: "forvent 1 ord",
         A2: "≤ 3 ord",
@@ -1061,16 +1083,16 @@ function parseFeedbackText(text: string): ParsedFeedback | null {
           }))
       : [];
 
-    // --- per-task feedback (tolerant mot gamle nøkler) ---
+    // --- per-task feedback (tolerant of older keys) ---
     const task_feedback = Array.isArray(parsed?.task_feedback)
       ? parsed.task_feedback
           .filter((t: any) => Number.isInteger(t?.index))
           .map((t: any) => {
-            // Støtt både nytt og gammelt schema
+            // Support both new and legacy schemas
             const no =
               typeof t.comment_no === "string"
                 ? t.comment_no
-                : typeof t.comment === "string" // gammel nøkkel
+                : typeof t.comment === "string" // legacy key
                 ? t.comment
                 : "";
             const tr =
@@ -1111,7 +1133,7 @@ function parseFeedbackText(text: string): ParsedFeedback | null {
       overall_feedback_trans: overallTr.trim(),
     };
   } catch (err) {
-    console.error("Feil ved parsing av feedback:", err, "\nRåtekst:\n", text);
+    console.error("Failed parsing feedback:", err, "\nRaw:\n", text);
     return null;
   }
 }
@@ -1220,7 +1242,7 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
-    backgroundColor: "rgba(0, 0, 0, 0.5)", // grå/lav opasitet foreground
+    backgroundColor: "rgba(0, 0, 0, 0.5)", // muted foreground overlay
     alignItems: "center",
     justifyContent: "center",
     zIndex: 999,

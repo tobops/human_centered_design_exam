@@ -1,4 +1,7 @@
-// components/i18n.ts
+/**
+ * i18n helpers and dictionaries for the UI copy used across the capture and task flows.
+ * Provides lookup helpers (`t`, `languageNameFromCode`) plus fallback strings.
+ */
 
 export type LangCode =
   | "en" | "es" | "pl" | "it" | "fr" | "de" | "uk" | "hi" | "ur" | "lt"
@@ -717,6 +720,9 @@ const UI: Record<LangCode | "fallback", Dict> = {
 };
 
 
+/**
+ * Looks up a UI string for the provided language code, falling back gracefully.
+ */
 export function t(lang: string, key: keyof typeof UI["fallback"]): string {
   const lc = (lang as LangCode) in UI ? (lang as LangCode) : "fallback";
   const val = UI[lc][key];
@@ -724,6 +730,9 @@ export function t(lang: string, key: keyof typeof UI["fallback"]): string {
   return UI.en[key] ?? UI.fallback[key] ?? key;
 }
 
+/**
+ * Maps a language code to a readable name for dropdowns and labels.
+ */
 export function languageNameFromCode(code: string, fallback = "English") {
   const names: Record<string, string> = {
     en: "English", es: "Spanish", pl: "Polish", it: "Italian", fr: "French",

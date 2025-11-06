@@ -1,3 +1,10 @@
+/**
+ * ItemDexModal
+ * ------------
+ * Presents the user’s collected items, including sorting, progress stats,
+ * and expanded item details with favorite toggles and TTS controls.
+ */
+
 import React, { useEffect, useState } from "react";
 import { Modal, View, Text, Pressable, StyleSheet, ScrollView } from "react-native";
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -37,6 +44,9 @@ type Props = {
   speak?: (text: string, lang: string) => void;
 };
 
+/**
+ * Modal showing the ItemDex collection, with local persistence and sorting controls.
+ */
 export default function ItemDexModal({ visible, onClose, speak }: Props) {
   const [data, setData] = useState<UserData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -244,10 +254,10 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
               <View style={styles.statsContainer}>
                 <View style={styles.statsRow}>
                   <Text style={styles.points}>
-                    <FontAwesome name="star" size={16} color="#fbbf24" /> {data.points} Points
+                    <FontAwesome name="star" size={16} color="#fbbf24" /> {data.points} Poeng
                   </Text>
                   <Text style={styles.collectionCount}>
-                    {data.collected_items.length} Items
+                    {data.collected_items.length} Objekter
                   </Text>
                 </View>
                 <View style={styles.progressBarBg}>
@@ -259,7 +269,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
                   />
                 </View>
                 <Text style={styles.progressText}>
-                  {data.collected_items.length}/50 collected
+                  {data.collected_items.length}/50 Samlet
                 </Text>
               </View>
 
@@ -292,7 +302,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
                       onPress={() => { setSortBy("date"); setShowSortMenu(false); }}
                     >
                       <FontAwesome name="calendar" size={14} color="#fff" />
-                      <Text style={styles.sortOptionText}>Date Added</Text>
+                      <Text style={styles.sortOptionText}>Dato</Text>
                       {sortBy === "date" && <FontAwesome name="check" size={14} color="#4ade80" />}
                     </Pressable>
                     <Pressable
@@ -300,7 +310,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
                       onPress={() => { setSortBy("alphabetical"); setShowSortMenu(false); }}
                     >
                       <FontAwesome name="sort-alpha-asc" size={14} color="#fff" />
-                      <Text style={styles.sortOptionText}>Alphabetical</Text>
+                      <Text style={styles.sortOptionText}>Alfabetisk</Text>
                       {sortBy === "alphabetical" && <FontAwesome name="check" size={14} color="#4ade80" />}
                     </Pressable>
                     <Pressable
@@ -308,7 +318,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
                       onPress={() => { setSortBy("level"); setShowSortMenu(false); }}
                     >
                       <FontAwesome name="signal" size={14} color="#fff" />
-                      <Text style={styles.sortOptionText}>Difficulty</Text>
+                      <Text style={styles.sortOptionText}>Vanskelighetsgrad</Text>
                       {sortBy === "level" && <FontAwesome name="check" size={14} color="#4ade80" />}
                     </Pressable>
                     <Pressable
@@ -316,7 +326,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
                       onPress={() => { setSortBy("favorites"); setShowSortMenu(false); }}
                     >
                       <FontAwesome name="star" size={14} color="#fbbf24" />
-                      <Text style={styles.sortOptionText}>Favorites</Text>
+                      <Text style={styles.sortOptionText}>Favoritter</Text>
                       {sortBy === "favorites" && <FontAwesome name="check" size={14} color="#4ade80" />}
                     </Pressable>
                   </View>
@@ -325,7 +335,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
 
               <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false}>
                 {data.collected_items.length === 0 ? (
-                  <Text style={styles.bodyTxt}>No items collected yet.</Text>
+                  <Text style={styles.bodyTxt}>Ingen objekter samlet enda.</Text>
                 ) : (
                   <View style={styles.grid}>
                     {getSortedItems(data.collected_items).map((item) => {
@@ -346,7 +356,7 @@ export default function ItemDexModal({ visible, onClose, speak }: Props) {
                           {/* Status Badge */}
                           {isNew && !isExpanded && (
                             <View style={styles.badge}>
-                              <Text style={styles.badgeText}>NEW</Text>
+                              <Text style={styles.badgeText}>NY</Text>
                             </View>
                           )}
 
