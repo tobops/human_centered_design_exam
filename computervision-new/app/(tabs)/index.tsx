@@ -102,6 +102,7 @@ const LANGUAGES = [
   { label: "Finnish", code: "fi" },
   { label: "Greek", code: "el" },
   { label: "Thai", code: "th" },
+  { label: "Malay", code: "ms" },
   { label: "Vietnamese", code: "vi" },
 ];
 
