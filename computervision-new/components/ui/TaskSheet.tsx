@@ -902,7 +902,7 @@ async function callTaskFeedback(
   };
 
   const prompt = `
-Du er en erfaren norsklærer og sensor (CEFR A1–B2). Du får komplette oppgaveobjekter og elevsvar.
+Du er en erfaren norsklærer og sensor (CEFR A1-B2). Du får komplette oppgaveobjekter og elevsvar.
 Svar KUN med gyldig UTF-8 JSON. Ingen kodeblokker, ingen ekstra felt, ingen trailing-komma.
 
 INNDATA (JSON)
@@ -911,23 +911,25 @@ ${JSON.stringify(inputPayload)}
 VURDERINGSREGLER (OBLIGATORISK)
 1) MULTIPLE:
    - Bruk "correct_no" og "user_answer_raw" deterministisk.
-   - Hvis lik → score 6 (evt 5–6 hvis du vil nyansere marginale tilfeller).
-   - Hvis ulik → score 2 (evt 1–3 hvis noe resonnering i "user_answer_text" henger på greip).
+   - Hvis lik → score 6 (evt 6 hvis du vil nyansere marginale tilfeller).
+   - Hvis svaralternativet er feil, men er faktisk mulig i virkeligheten → score 4-5 og forklar hvorfor.
+   - Hvis åpenbart feil → score 1 (evt 1-3 hvis noe resonnering i "user_answer_text" henger på greip).
    - Ikke trekk for lengde i MC. Ikke be om mer tekst i MC-kommentarer.
+   - Vær litt snill
    - I kommentaren: bekreft korrekt/feil og vis riktig alternativ TEKSTLIG (ikke bare bokstav).
 
 2) WRITE / LISTEN:
-   - Vurder menings­treff mot "question_no" (WRITE) eller "question_no"=lydsetning (LISTEN).
+   - Vurder meningstreff mot "question_no" (WRITE) eller "question_no"=lydsetning (LISTEN).
    - Tillat små stavefeil/nærsynonymer hvis meningen er tydelig.
    - Knyt score til CEFR-lengdekrav (se "level_hint" for oppgaven).
    - LISTEN: Trekk hvis viktige elementer mangler (f.eks. du skrev bare halvparten).
 
 3) SPEAK:
    - Hvis "user_answer_raw" er tekstlig transkripsjon → vurder innhold (mening), ordstilling og omfang i tråd med nivå.
-   - Hvis "user_answer_raw" == "(audio)" uten tekst → sett 4 som default (gjennomført, men ikke verifiserbar).
+   - Hvis "user_answer_raw" er ikke i nærheten av fasit → vurder enten terningkast 1 eller 2.
    - Tomt svar → 1.
 
-4) SKALA (terningkast 1–6):
+4) SKALA (terningkast 1-6):
    - 6: Presist, komplett og naturlig for nivået.
    - 5: Småfeil, ellers klart og riktig.
    - 4: Forståelig, men merkbare feil/avvik.
@@ -936,9 +938,9 @@ VURDERINGSREGLER (OBLIGATORISK)
    - 1: Tomt/uforståelig/på siden.
 
 5) KOMMENTARER:
-   - Per oppgave: 1–2 setninger. Konkrete grep neste gang (ordvalg, bøying, ordstilling, uttalehint, lytting).
+   - Per oppgave: 1-2 setninger. Konkrete grep neste gang (ordvalg, bøying, ordstilling, uttalehint, lytting).
    - Unngå metakommentarer (f.eks. "svaret er kort") i MC.
-   - Samlet: 3–6 setninger, motiverende, med 2–3 neste steg.
+   - Samlet: 3-6 setninger, motiverende, med 2-3 neste steg.
 
 6) SPRÅK:
    - Alle kommentarer på norsk i "comment_no".

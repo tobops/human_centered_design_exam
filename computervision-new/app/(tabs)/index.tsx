@@ -17,16 +17,23 @@
 // 3. Add a "read text" speech button. (button, norwegian word, translated word) ===FINISHED===
 
 // Fourth Step:
-// 1. Add "Task" button on the right of each word
-// 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject)
-// 3. Add correct assesment to answer with score from 1-6 and explanation
+// 1. Add "Task" button on the right of each word ===FINISHED===
+// 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject) ===FINISHED===
+// 3. Add correct assesment to answer with score from 1-6 and explanation ===FINISHED===
 // 4. Make a button to make task with two or more items in image
 
 
 // TODO:
-// 1. Grammar
-// 2. Collect items
-// 3. Points
+// 1. Grammar ==FINISHED BUT LITTLE WEIRD==
+// 2. Collect items ===FINISHED===
+// 3. Points ===FINISHED
+
+// BUGS THAT NEEDS FIXING:
+// - TTS sound low!!! idk how tho... ==BETTER? IDK==
+// - Make it easier to drag item modal up
+// - Click on markers to play sound. ===FINISHED===
+// - More Norwegian and not swedish ==MUCH BETTER==
+// - Better task grading
 
 /**
  * Screen Overview:
@@ -67,7 +74,7 @@ import * as ImageManipulator from "expo-image-manipulator";
 import { MaterialIcons } from "@expo/vector-icons";
 import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
 import Feather from '@expo/vector-icons/Feather';
-import Svg, { Rect, Path, Text as SvgText } from "react-native-svg";
+import Svg, { Rect, Path, Text as SvgText, G } from "react-native-svg";
 import * as FileSystem from "expo-file-system/legacy";
 
 /* #######################################  CONSTRAINTS / CONFIG  ####################################### */
@@ -112,6 +119,8 @@ const LEVELS = [
   "B1",
   "B2"
 ];
+
+const AnimatedG = Animated.createAnimatedComponent(G);
 
 const BUBBLE = {
   font: 12, // font size
@@ -262,6 +271,7 @@ export default function Screen() {
 
   //Button Click Animation
   const buttonAnim = useRef(new Animated.Value(1)).current;
+  const markerScalesRef = useRef<Record<number, Animated.Value>>({});
 
   // Language chosen (use setTargetLang("language_code") to change language)
   const [targetLang, setTargetLang] = useState("en");
@@ -289,6 +299,36 @@ export default function Screen() {
     }
     const elapsed = ((now - startTimeRef.current) / 1000).toFixed(3); //seconds
     console.log(`[+${elapsed}s] ${msg}`);
+  };
+
+  const getMarkerScale = (idx: number) => {
+    if (!markerScalesRef.current[idx]) {
+      markerScalesRef.current[idx] = new Animated.Value(1);
+    }
+    return markerScalesRef.current[idx];
+  };
+
+  const bounceMarker = (idx: number) => {
+    const val = getMarkerScale(idx);
+    Animated.sequence([
+      Animated.spring(val, {
+        toValue: 0.9,
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 8,
+      }),
+      Animated.spring(val, {
+        toValue: 1,
+        useNativeDriver: true,
+        speed: 16,
+        bounciness: 8,
+      }),
+    ]).start();
+  };
+
+  const handleMarkerPress = (det: DetectedItem & { desc_NO: string; desc_TRANS: string }, idx: number) => {
+    bounceMarker(idx);
+    speakTTS(det.label_NO, "no");
   };
 
   /**
@@ -832,7 +872,14 @@ export default function Screen() {
                     } ${by} Z`;
 
                 return (
-                  <React.Fragment key={i}>
+                  <AnimatedG
+                    key={i}
+                    onPress={() => handleMarkerPress(det, i)}
+                    onPressIn={() => bounceMarker(i)}
+                    scale={getMarkerScale(i) as any}
+                    originX={det.cx}
+                    originY={det.cy}
+                  >
                     {/* debug rectangle around the object, comment in if needed */}
                     {/* <Rect x={det.x1} y={det.y1} width={det.x2-det.x1} height={det.y2-det.y1} stroke="#ff0" strokeWidth={2} fill="transparent" /> */}
 
@@ -866,7 +913,7 @@ export default function Screen() {
                     >
                       {det.label_NO.toUpperCase()}
                     </SvgText>
-                  </React.Fragment>
+                  </AnimatedG>
                 );
               })}
             </Svg>
