@@ -34,6 +34,7 @@
 // - Click on markers to play sound. ===FINISHED===
 // - More Norwegian and not swedish ==MUCH BETTER==
 // - Better task grading
+// - Hold to record instead of tap ==YEP==
 
 /**
  * Screen Overview:
@@ -252,6 +253,7 @@ export default function Screen() {
   // Task State
   const [taskOpen, setTaskOpen] = useState(false);
   const [taskItem, setTaskItem] = useState<DetectedItem | null>(null);
+  const [taskTrigger, setTaskTrigger] = useState<number | null>(null);
 
   // ItemDex state
   const [itemDexOpen, setItemDexOpen] = useState(false)
@@ -272,6 +274,13 @@ export default function Screen() {
   //Button Click Animation
   const buttonAnim = useRef(new Animated.Value(1)).current;
   const markerScalesRef = useRef<Record<number, Animated.Value>>({});
+  const markerDragRef = useRef<{
+    idx: number | null;
+    startX: number;
+    startY: number;
+    startCx: number;
+    startCy: number;
+  }>({ idx: null, startX: 0, startY: 0, startCx: 0, startCy: 0 });
 
   // Language chosen (use setTargetLang("language_code") to change language)
   const [targetLang, setTargetLang] = useState("en");
@@ -308,6 +317,8 @@ export default function Screen() {
     return markerScalesRef.current[idx];
   };
 
+  const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+
   const bounceMarker = (idx: number) => {
     const val = getMarkerScale(idx);
     Animated.sequence([
@@ -329,6 +340,36 @@ export default function Screen() {
   const handleMarkerPress = (det: DetectedItem & { desc_NO: string; desc_TRANS: string }, idx: number) => {
     bounceMarker(idx);
     speakTTS(det.label_NO, "no");
+  };
+
+  const handleMarkerDragStart = (det: DetectedItem, idx: number, e: any) => {
+    markerDragRef.current = {
+      idx,
+      startX: e.nativeEvent.locationX,
+      startY: e.nativeEvent.locationY,
+      startCx: det.cx,
+      startCy: det.cy,
+    };
+  };
+
+  const handleMarkerDragMove = (idx: number, e: any) => {
+    const drag = markerDragRef.current;
+    if (drag.idx !== idx || !aiSize) return;
+    const dx = e.nativeEvent.locationX - drag.startX;
+    const dy = e.nativeEvent.locationY - drag.startY;
+    const nextCx = clamp(drag.startCx + dx, 0, aiSize.w);
+    const nextCy = clamp(drag.startCy + dy, 0, aiSize.h);
+    setDetections((prev) =>
+      prev.map((d, i) =>
+        i === idx
+          ? { ...d, cx: nextCx, cy: nextCy }
+          : d
+      )
+    );
+  };
+
+  const handleMarkerDragEnd = () => {
+    markerDragRef.current.idx = null;
   };
 
   /**
@@ -876,6 +917,11 @@ export default function Screen() {
                     key={i}
                     onPress={() => handleMarkerPress(det, i)}
                     onPressIn={() => bounceMarker(i)}
+                    onStartShouldSetResponder={() => true}
+                    onResponderGrant={(e) => handleMarkerDragStart(det, i, e)}
+                    onResponderMove={(e) => handleMarkerDragMove(i, e)}
+                    onResponderRelease={handleMarkerDragEnd}
+                    onResponderTerminate={handleMarkerDragEnd}
                     scale={getMarkerScale(i) as any}
                     originX={det.cx}
                     originY={det.cy}
@@ -988,11 +1034,14 @@ export default function Screen() {
                       {/* LEFT SIDE: detected object in Norwegian + translated word */}
                       <View style={styles.itemTextWrap}>
                         <Text style={styles.itemLabel}>
-                          {det.label_NO.charAt(0).toUpperCase() + det.label_NO.slice(1)}
+                          {det.label_NO.charAt(0).toUpperCase() + det.label_NO.slice(1)} | {det.label_TRANS.charAt(0).toUpperCase() + det.label_TRANS.slice(1)}
+
                         </Text>
-                        <Text style={styles.itemTranslation}>
-                          {det.label_TRANS.charAt(0).toUpperCase() + det.label_TRANS.slice(1)}
-                        </Text>
+                        {!!det.label_grammar_no && (
+                          <Text style={styles.itemGrammar}>
+                            {det.label_grammar_no}
+                          </Text>
+                        )}
                       </View>
 
                       {/* RIGHT SIDE: action buttons for TTS and Task */}
@@ -1004,17 +1053,6 @@ export default function Screen() {
                           iconName="multitrack-audio"
                           style={styles.ttsButton}
                         />
-                        {/* Task button  */}
-                        <TTSButton
-                          onPress={() => {
-                            setTaskItem(det);
-                            setTaskOpen(true);
-                          }}
-                          showIcon={true}
-                          iconLibrary="FontAwesome5"
-                          iconName="tasks"
-                          style={styles.ttsButton}
-                          />
                       </View>
                     </View>
 
@@ -1040,6 +1078,20 @@ export default function Screen() {
                         />
                       </View>
                     </View>
+
+                    {/* Task button (full width) */}
+                    <Pressable
+                      onPress={() => {
+                        setTaskItem(det);
+                        setTaskTrigger(Date.now());
+                        setTaskOpen(true);
+                      }}
+                      style={styles.taskCTA}
+                    >
+                      <Text style={styles.taskCTAText}>
+                        Gjør oppgaver / {t(targetLang, "startTask")}
+                      </Text>
+                    </Pressable>
                   </View>
                 ))}
               </View>
@@ -1047,10 +1099,15 @@ export default function Screen() {
           </ModalSheet>
           <TaskSheet
             visible={taskOpen}
-            onClose={() => setTaskOpen(false)}
+            onClose={() => {
+              setTaskOpen(false);
+              setTaskItem(null);
+              setTaskTrigger(null);
+            }}
             item={taskItem}
             targetLang={targetLang}
             level={targetLevel as "A1" | "A2" | "B1" | "B2"}
+            triggerKey={taskTrigger}
             speak={(t, lang) => speakTTS(t, lang)}
             onStartTask={(it, { level, lang }) => {
               // TODO: start oppgaveflyt her
@@ -1374,7 +1431,8 @@ Regler for bokser:
 Regler for etiketter:
 - Spesifikke, konkrete substantiv (ikke “ting/objekt/produkt”).
 - "label_NO" på norsk, tilpasset ${level}. "label_TRANS" er samme ord på ${label}.
-- 1–2 ord. Unngå merkenavn uten klar identifikator.
+- Ikke inkluder kjønn (en/et) i label_no og label_trans. Det skal bare være i label_grammar_no.
+- 1-2 ord. Unngå merkenavn uten klar identifikator.
 
 Regler for beskrivelser:
 - "desc_NO": én kort norsk frase (≤8 ord) om hva/hvor i DETTE bildet.
@@ -1383,8 +1441,9 @@ Regler for beskrivelser:
 
 Regler for "label_grammar_no" (norsk bokmål):
 - VIKTIG: Bruk RIKTIG grammatisk kjønn (en/et). Dobbelsjekk kjønnet for hvert ord.
+- VIKTIG: Ikke inkluder kjønn (en/et) i "label_no". KUN i "label_grammar_no"
 - Rekkefølge: "ARTIKKEL SUBSTANTIV, bestemt form, flertall, flertall bestemt"
-- Format: "en sofa, sofaen, sofaer, sofaene" (IKKE "en, sofaen, sofaer, sofaene")
+- Format: "en sofa, sofaen, sofaer, sofaene" (IKKE "en, sofaenr, sofaer, sofaene")
 - ALLTID inkluder substantivet i første form: "[artikkel] [ord]"
 - Bruk kun "en" eller "et" (ikke "ei").
 - Hvis flertall ubestemt ender på "ere" → flertall bestemt "erne".
@@ -1669,6 +1728,11 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "600",
   },
+  itemGrammar: {
+    color: "#9aa0a6",
+    fontSize: 11,
+    marginTop: 2,
+  },
   itemTranslation: {
     color: "#bbb",
     fontSize: 13,
@@ -1719,6 +1783,19 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.25)",
+  },
+  taskCTA: {
+    marginTop: 12,
+    backgroundColor: "#3b82f6",
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: "center",
+  },
+  taskCTAText: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 14,
+    letterSpacing: 0.3,
   },
   blueBg: {
     backgroundColor: "#3b82f6", // base blue

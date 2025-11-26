@@ -94,7 +94,7 @@ export default function TaskSheet(props: TaskSheetProps) {
   const [feedbackLoading, setFeedbackLoading] = useState(false);
   const [feedback, setFeedback] = useState<ParsedFeedback | null>(null);
 
-  const [stage, setStage] = useState<'home'|'tasks'|'feedback'>('home');
+  const [stage, setStage] = useState<'tasks'|'feedback'>('tasks');
 
   const [loadingTasks, setLoadingTasks] = useState(false);
 
@@ -271,10 +271,55 @@ export default function TaskSheet(props: TaskSheetProps) {
     return output;
   }
 
+  // Auto-generate tasks when opened
+  React.useEffect(() => {
+    let active = true;
+    async function generate() {
+      if (!visible || !item) return;
+      try {
+        setLoadingTasks(true);
+        const raw = await logRandomTask(item.label_NO, targetLang, level);
+        if (!active) return;
+        const parsed = parseOutputText(raw);
+        setCurrentTasks(parsed);
+        setQuestionIndex(0);
+        setTextAnswer("");
+        setSelectedChoice(null);
+        setIsRecording(false);
+        setAnswers({});
+        setStage("tasks");
+      } catch (e) {
+        console.error("Task gen error:", e);
+      } finally {
+        if (active) setLoadingTasks(false);
+      }
+    }
+    generate();
+    if (!visible) {
+      // Reset when modal closes
+      setStage("tasks");
+      setCurrentTasks([]);
+      setQuestionIndex(0);
+      setTextAnswer("");
+      setSelectedChoice(null);
+      setIsRecording(false);
+      setRecording(null);
+      setAudioUri(null);
+      setTranscript("");
+      setIsTranscribing(false);
+      setAnswers({});
+      setFeedback(null);
+      setFeedbackLoading(false);
+    }
+    return () => {
+      active = false;
+    };
+  }, [visible, item?.label_NO, targetLang, level]);
+
   return (
     <>
-      {/* Modal #1: Main TaskSheet (hidden when task modal is open) */}
-      {hasItem && (
+      {/* Modal #1 disabled: skipping pre-start screen */}
+      {false && hasItem && (
         <Modal
           visible={visible && stage === 'home'}
           transparent
@@ -403,24 +448,39 @@ export default function TaskSheet(props: TaskSheetProps) {
         </Modal>
       )}
 
-      {/* Modal #2: After Starting Task */}
+      {/* Loader while tasks generate */}
       <Modal
-        visible={visible && stage === 'tasks'}
+        visible={visible && loadingTasks}
         transparent
         animationType="fade"
         presentationStyle="overFullScreen"
         statusBarTranslucent
-        onRequestClose={() => {
-          setStage('home');
-        }}
+        onRequestClose={onClose}
+      >
+        <View style={styles.backdrop}>
+          <SafeAreaView style={[styles.sheet, { alignItems: "center", justifyContent: "center" }]}>
+            <View style={styles.loaderCard}>
+              <ActivityIndicator size="large" color="#fff" />
+              <Text style={styles.loaderText}>Generating tasks...</Text>
+            </View>
+          </SafeAreaView>
+        </View>
+      </Modal>
+
+      {/* Modal #2: After Starting Task */}
+      <Modal
+        visible={visible && stage === 'tasks' && !loadingTasks}
+        transparent
+        animationType="fade"
+        presentationStyle="overFullScreen"
+        statusBarTranslucent
+        onRequestClose={onClose}
       >
         <View style={styles.backdrop}>
           <SafeAreaView style={styles.sheet}>
             {/* Close button */}
             <Pressable
-              onPress={() => {
-                setStage('home');
-              }}
+              onPress={onClose}
               style={styles.closeBtn}
               hitSlop={12}
             >
@@ -631,11 +691,11 @@ export default function TaskSheet(props: TaskSheetProps) {
         animationType="fade"
         presentationStyle="overFullScreen"
         statusBarTranslucent
-        onRequestClose={() => setStage('home')}
+        onRequestClose={onClose}
       >
         <View style={styles.backdrop}>
           <SafeAreaView style={styles.sheet}>
-            <Pressable onPress={() => setStage('home')} style={styles.closeBtn} hitSlop={12}>
+            <Pressable onPress={onClose} style={styles.closeBtn} hitSlop={12}>
               <MaterialIcons name="close" size={32} color="#fff" />
             </Pressable>
             <ScrollView
