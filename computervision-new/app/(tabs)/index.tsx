@@ -1,372 +1,1797 @@
-// @ts-nocheck
-import React, { useEffect, useRef, useState } from "react";
-import { View, Text, Pressable, StyleSheet, Dimensions, Animated, Platform, Image } from "react-native";
+// First Step:
+// 1. Show Live Camera ===FINISHED===
+// 2. Take picture with a button ===FINISHED===
+// 3. Show image on screen ===FINISHED===
+// 4. Return to camera by pressing the "X" ===FINISHED===
+
+// Second Step:
+// 1. Make item recognition and print in log ===FINISHED===
+// 2. Add a button to choose from different languages: ===FINISHED===
+// English, Spanish, Polish, italian ===FINISHED===
+// 3. Choose which language to log. output: (norwegian word, chosen language word) ===FINISHED===
+// 4. Add accurate boxes around objects and show them with norwegian label. ===FINISHED===
+
+// Third Step:
+// 1. Add a modal that user can drag up to see ===FINISHED===
+// 2. Show both the norwegian word and translated word ===FINISHED==
+// 3. Add a "read text" speech button. (button, norwegian word, translated word) ===FINISHED===
+
+// Fourth Step:
+// 1. Add "Task" button on the right of each word ===FINISHED===
+// 2. Random selection of task (asnwer question, write a sentence, speak out loud, recognize speech with item as subject) ===FINISHED===
+// 3. Add correct assesment to answer with score from 1-6 and explanation ===FINISHED===
+// 4. Make a button to make task with two or more items in image
+
+
+// TODO:
+// 1. Grammar ==FINISHED BUT LITTLE WEIRD==
+// 2. Collect items ===FINISHED===
+// 3. Points ===FINISHED
+
+// BUGS THAT NEEDS FIXING:
+// - TTS sound low!!! idk how tho... ==BETTER? IDK==
+// - Make it easier to drag item modal up
+// - Click on markers to play sound. ===FINISHED===
+// - More Norwegian and not swedish ==MUCH BETTER==
+// - Better task grading
+
+/**
+ * Screen Overview:
+ * - Hosts the camera experience, capture workflow, and detection overlay.
+ * - Coordinates modals (ItemDex, tasks, leaderboard) and notification toasts.
+ * - Persists collected items and user points, keeping leaderboard data in sync.
+ */
+
+/* #######################################  IMPORTS  ####################################### */
+import ModalSheet from "../../components/ui/ModalSheet";
+import { initTTS, speakTTS } from "../../components/tts";
+import TaskSheet, { type DetectedItem } from "../../components/ui/TaskSheet";
+import ItemDexModal from "../../components/ui/ItemDexModal";
+import LeaderBoardModal from "../../components/ui/LeaderBoardModal";
+import BUNDLED_DEFAULT from "../../user_data.json";
+import { setUserLeaderboardStats } from "../../lib/leaderboardStorage";
+import { t, languageNameFromCode } from "../../components/i18n";
+import { flagFor } from "../../components/flags";
+
+import React, { useRef, useState, useEffect, useCallback } from "react";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import 'react-native-gesture-handler';
+import {
+  View,
+  Text,
+  Pressable,
+  StyleSheet,
+  Animated,
+  Image,
+  Dimensions,
+  ScrollView,
+  Modal,
+  ViewStyle,
+  StyleProp,
+  TextStyle
+} from "react-native";
 import * as ImageManipulator from "expo-image-manipulator";
-import Svg, { Rect } from "react-native-svg";
+import { MaterialIcons } from "@expo/vector-icons";
+import FontAwesome5 from '@expo/vector-icons/FontAwesome5';
+import Feather from '@expo/vector-icons/Feather';
+import Svg, { Rect, Path, Text as SvgText, G } from "react-native-svg";
+import * as FileSystem from "expo-file-system/legacy";
 
-const MODEL = "gpt-4.1-mini";        // mer presis: "o4-mini" (tregere)
-const MAX_SIDE = 768;               // 512 = raskere / 960 = mer nøyaktig
-const JPEG_QUALITY = 0.85;
+/* #######################################  CONSTRAINTS / CONFIG  ####################################### */
 
-const PROMPT = `
-Returner KUN gyldig JSON med nøyaktig dette skjemaet:
-{"detections":[{"label_no":"klokke","confidence":0.97,"box_norm":{"xc":0.5000,"yc":0.5000,"w":0.3000,"h":0.4000}}]}
+const CAMERA_QUALITY = 0.7;
+const MAX_SIDE = 640;
 
-OPPGAVE
-Analyser ett bilde og returner opptil fem objekter med presise bounding boxes og korte norske labels.
+const MODEL = "gpt-4o-mini"; // What GPT model to use for image detection
+const OPENAI_URL = "https://api.openai.com/v1/responses";
 
-OUTPUTREGLER
-- Kun JSON. Ingen forklaringer, ingen trailing komma.
-- Felt:
-  - label_no: kort norsk ord (maks to), spesifikt fremfor generelt.
-  - confidence: [0,1], 2 desimaler.
-  - box_norm: xc,yc,w,h ∈ [0,1], 4 desimaler, relativt til hele bildet.
-- Sortér detections synkende på confidence.
-- Returner {"detections":[]} hvis ingen sikre funn.
+const LANGUAGES = [
+  { label: "English", code: "en" },
+  { label: "Spanish", code: "es" },
+  { label: "Polish", code: "pl" },
+  { label: "Italian", code: "it" },
+  { label: "French", code: "fr" },
+  { label: "German", code: "de" },
+  { label: "Ukrainian", code: "uk" },
+  { label: "Hindi", code: "hi" },
+  { label: "Urdu", code: "ur" },           // Pakistan
+  { label: "Lithuanian", code: "lt" },
+  { label: "Chinese (Mandarin)", code: "zh" },
+  { label: "Portuguese", code: "pt" },
+  { label: "Russian", code: "ru" },
+  { label: "Arabic", code: "ar" },
+  { label: "Japanese", code: "ja" },
+  { label: "Korean", code: "ko" },
+  { label: "Turkish", code: "tr" },
+  { label: "Dutch", code: "nl" },
+  { label: "Swedish", code: "sv" },
+  { label: "Danish", code: "da" },
+  { label: "Finnish", code: "fi" },
+  { label: "Greek", code: "el" },
+  { label: "Thai", code: "th" },
+  { label: "Malay", code: "ms" },
+  { label: "Vietnamese", code: "vi" },
+];
 
-UNIVERSELLE PRINSIPPER (generalisert, ikke domenespesifikke)
-1) Fysikalitet først: Merk bare **fysiske** objekter i scenen. Alt som kun er representert som bilde, video, refleksjon, skygge, speilning eller på en skjerm/poster ignoreres. Merk da selve bæreren (fysisk enhet), ikke innholdet.
-2) Objektprioritet: Prioriter nærliggende, tydelig avgrensede objekter foran store bakgrunner. Nær-/forgrunn > fjern-/bakgrunn når du velger topp 5.
-3) Stramhet vs. avkutt: Boksene skal følge synlig kontur med mål <3% ekstra margin. Dersom valget står mellom å **kutte** objektet eller å inkludere litt bakgrunn: velg **svakt for stor** (heller litt for stor enn litt for liten).
-4) Anti-megaboks: Én boks = én sammenhengende gjenstand. Ikke lag bokser som dekker flere separate objekter eller store scenesegmenter.
-5) Skala-robusthet: Søk i flere skalaer. Kandidater helt ned til ~3% av bildeflaten skal vurderes. Behold små objekter når de er tydelig avgrenset.
-6) Occlusion/truncation: Delvis skjulte eller avkuttede objekter kan merkes hvis identiteten er tydelig. Boks følger kun den **synlige** delen.
-7) Konsistenskontroll: Justér boks til sannsynlige kanter (edge-snap). Unngå ekstremt ulogiske aspektforhold for kjente formfaktorer. Klipp til bildekant; ingen verdier <0 eller >1.
-8) Duplikathåndtering: Slå sammen overlappende kandidater (IoU>0.60). Behold den med høyest presisjon (mest stram) og høyest confidence.
-9) Kalibrering: Senk confidence ved sterk bevegelsesuskarphet, lav kontrast, ekstrem vinkel eller tett bakgrunnsblanding. Øk moderat ved klare kanter og konsistente konturer.
-10) Navneregler: Bruk naturlig, spesifikt norsk ord fremfor superkategori. Ingen merkenavn/modeller. Små bokstaver, ingen mellomrom dersom sammensatt.
+const LEVELS = [
+  "A1",
+  "A2",
+  "B1",
+  "B2"
+];
 
-VALIDERING FØR SVAR
-- Tall ∈ [0,1]? Avrunding riktig?
-- Boksene stramme (mål <3%) og ikke avkuttende? Hvis i tvil: litt for store.
-- Ingen megabokser / ett-objekt-per-boks?
-- Maks 5, sortert på confidence?
+const AnimatedG = Animated.createAnimatedComponent(G);
 
-Returner deretter KUN JSON i skjemaet over.
-`;
+const BUBBLE = {
+  font: 12, // font size
+  padX: 15, // horizontal padding
+  padY: 6, // vertical padding
+  minW: 70, // minimum width
+  maxW: 240, // maximum width
+  radius: 8, // corner radius
+  tip: 12, // pointer length
+  stroke: "#3b82f6",
+  strokeW: 3,
+};
 
+type UserData = {
+  points: number;
+  collected_items: any[];
+  [key: string]: any;
+};
 
+type NotificationPayload = {
+  title: string;
+  subtitle?: string;
+  icon?: string;
+};
 
-const { width: SW, height: SH } = Dimensions.get("window");
+const USER_DATA_PATH =
+  `${(FileSystem as any).documentDirectory || (FileSystem as any).cacheDirectory}user_data.json`;
 
+function cloneDefaultUserData(): UserData {
+  const clone = JSON.parse(JSON.stringify(BUNDLED_DEFAULT ?? {}));
+  return {
+    ...clone,
+    points: typeof clone.points === "number" ? clone.points : 0,
+    collected_items: Array.isArray(clone.collected_items) ? clone.collected_items : [],
+  };
+}
+
+async function ensureUserDataFile() {
+  try {
+    const info = await FileSystem.getInfoAsync(USER_DATA_PATH);
+    if (!info.exists) {
+      const seed = cloneDefaultUserData();
+      await FileSystem.writeAsStringAsync(
+        USER_DATA_PATH,
+        JSON.stringify(seed, null, 2),
+        { encoding: FileSystem.EncodingType.UTF8 }
+      );
+    }
+  } catch (err) {
+    console.error("ensureUserDataFile error:", err);
+  }
+}
+
+async function readUserDataFile(): Promise<UserData> {
+  try {
+    await ensureUserDataFile();
+    const content = await FileSystem.readAsStringAsync(USER_DATA_PATH, {
+      encoding: FileSystem.EncodingType.UTF8,
+    });
+    const parsed = JSON.parse(content);
+    return {
+      ...parsed,
+      points: typeof parsed.points === "number" ? parsed.points : 0,
+      collected_items: Array.isArray(parsed.collected_items) ? parsed.collected_items : [],
+    };
+  } catch (err) {
+    console.error("Failed to read user data:", err);
+    return cloneDefaultUserData();
+  }
+}
+
+async function writeUserDataFile(data: UserData) {
+  await FileSystem.writeAsStringAsync(
+    USER_DATA_PATH,
+    JSON.stringify(data, null, 2),
+    { encoding: FileSystem.EncodingType.UTF8 }
+  );
+}
+
+/* #######################################  COMPONENT  ####################################### */
+
+// Main Function
 export default function Screen() {
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<CameraView>(null);
+  /* ----------  REFERENCES  ---------- */
 
-  const [facing, setFacing] = useState<"front"|"back">("front");
-  const [busy, setBusy] = useState(false);
+  const [detections, setDetections] = useState<
+    Array<{
+      desc_NO: any;
+      desc_TRANS: any;
+      label_NO: string;
+      label_TRANS: string;
+      label_grammar_no: string;
+      confidence: number;
+      x1: number;
+      y1: number;
+      x2: number;
+      y2: number;
+      cx: number;
+      cy: number;
+    }>
+  >([]);
 
-  // Preview state
-  const [previewUri, setPreviewUri] = useState<string | null>(null);
-  const [imgW, setImgW] = useState(0);
-  const [imgH, setImgH] = useState(0);
-  const [boxes, setBoxes] = useState<any[]>([]);
-  const flashAnim = useRef(new Animated.Value(0)).current;
+  // AI Image Size
+  const [aiSize, setAiSize] = useState<{ w: number; h: number } | null>(null);
+
+  // Flash Effect
+  const flashAnim = useRef(new Animated.Value(0)).current; // Animation for flash effect, returns: value from 0 to 1
 
   // Loading bar
-  const [loading, setLoading] = useState(false);
-  const prog = useRef(new Animated.Value(0)).current;
+  const [loading, setLoading] = useState(false); // Loading state for the loading bar (true/false)
+  const prog = useRef(new Animated.Value(0)).current; // number from 0 to 1 for progress bar animation (0 empty, 1 full)
+  const SW = Dimensions.get("window").width; // Screen Width
+  const barW = prog.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, SW * 0.6],
+  }); // Width of loading bar based on prog value
 
-  useEffect(() => { if (!permission?.granted) requestPermission(); }, [permission]);
+  const [busy, setBusy] = useState(false); // Busy State (true/false)
 
-  const flash = () => {
-    flashAnim.setValue(1);
-    Animated.timing(flashAnim, { toValue: 0, duration: 150, useNativeDriver: true }).start();
+  const [permission, requestPermission] = useCameraPermissions(); // Camera Access
+  const cameraRef = useRef<CameraView>(null); // "remote" to camera
+
+  // Preview State
+  const [previewUri, setPreviewUri] = useState<string | null>(null); // Saves URI of the captured image
+
+  // Modal State
+  const [modalOpen, setModalOpen] = useState(false);
+
+  // Task State
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [taskItem, setTaskItem] = useState<DetectedItem | null>(null);
+
+  // ItemDex state
+  const [itemDexOpen, setItemDexOpen] = useState(false)
+
+  // Leaderboard state
+  const [leaderBoardOpen, setLeaderBoardOpen] = useState(false);
+
+  // Notification toast state
+  const [showNotification, setShowNotification] = useState(false);
+  const [notificationData, setNotificationData] = useState<NotificationPayload>({
+    title: "",
+    subtitle: "",
+    icon: "box",
+  });
+  const notificationAnim = useRef(new Animated.Value(-100)).current; // Start off-screen
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  //Button Click Animation
+  const buttonAnim = useRef(new Animated.Value(1)).current;
+  const markerScalesRef = useRef<Record<number, Animated.Value>>({});
+
+  // Language chosen (use setTargetLang("language_code") to change language)
+  const [targetLang, setTargetLang] = useState("en");
+
+  // Diff Level chosen
+  const [targetLevel, setTargetLevel] = useState("A1")
+
+  useEffect(() => { initTTS(); }, []);
+
+  const [canScroll, setCanScroll] = React.useState(false);
+
+  const handleProgress = (p: number) => {
+    setCanScroll(p < 0.2); //0: full open, 1: peek
   };
 
-  const onFlip = () => setFacing(f => (f === "front" ? "back" : "front"));
+  // DEBUGGING
+  const startTimeRef = useRef<number | null>(null); // Stopwatch
 
-  const startProgress = () => {
-    setLoading(true);
-    prog.setValue(0);
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(prog, { toValue: 0.7, duration: 900, useNativeDriver: false }),
-        Animated.timing(prog, { toValue: 1.0, duration: 500, useNativeDriver: false }),
-      ])
-    ).start();
-  };
-  const stopProgress = () => {
-    Animated.timing(prog, { toValue: 1, duration: 120, useNativeDriver: false }).start(() => {
-      setLoading(false);
-      prog.setValue(0);
-    });
+  /* ----------  HELPER FUNCTIONS  ---------- */
+
+  const logWithTime = (msg: string) => {
+    const now = Date.now();
+    if (startTimeRef.current === null) {
+      startTimeRef.current = now;
+    }
+    const elapsed = ((now - startTimeRef.current) / 1000).toFixed(3); //seconds
+    console.log(`[+${elapsed}s] ${msg}`);
   };
 
-  const takeAndPredict = async () => {
-    if (!cameraRef.current || busy) return;
+  const getMarkerScale = (idx: number) => {
+    if (!markerScalesRef.current[idx]) {
+      markerScalesRef.current[idx] = new Animated.Value(1);
+    }
+    return markerScalesRef.current[idx];
+  };
+
+  const bounceMarker = (idx: number) => {
+    const val = getMarkerScale(idx);
+    Animated.sequence([
+      Animated.spring(val, {
+        toValue: 0.9,
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 8,
+      }),
+      Animated.spring(val, {
+        toValue: 1,
+        useNativeDriver: true,
+        speed: 16,
+        bounciness: 8,
+      }),
+    ]).start();
+  };
+
+  const handleMarkerPress = (det: DetectedItem & { desc_NO: string; desc_TRANS: string }, idx: number) => {
+    bounceMarker(idx);
+    speakTTS(det.label_NO, "no");
+  };
+
+  /**
+   * Persists newly detected items to `user_data.json`, awarding points and
+   * syncing the leaderboard once duplicates have been filtered out.
+   */
+  const saveItemsToUserData = async (detections: Array<{
+    label_NO: string;
+    label_TRANS: string;
+    desc_NO: string;
+    desc_TRANS: string;
+    label_grammar_no: string;
+  }>, level: string, targetLang: string) => {
     try {
-      setBusy(true);
+      console.log("📥 Saving items to user_data.json...");
 
-      // 1) foto
-      const photo = await cameraRef.current.takePictureAsync({
-        skipProcessing: true,
-        quality: JPEG_QUALITY,
-        base64: true,
-      });
+      const userData = await readUserDataFile();
 
-      // 2) speil om front
-      let base = photo;
-      if (facing === "front") {
-        base = await ImageManipulator.manipulateAsync(
-          photo.uri,
-          [{ flip: ImageManipulator.FlipType.Horizontal }],
-          { compress: JPEG_QUALITY, base64: true }
+      // Track new items added
+      let newItemsCount = 0;
+
+      // Add new detections (prevent duplicates)
+      for (const det of detections) {
+        // Check if item already exists (by label_NO)
+        const exists = userData.collected_items.some(
+          (item: any) => item.label_NO.toLowerCase() === det.label_NO.toLowerCase()
         );
+
+        if (!exists) {
+          // Generate unique ID
+          const timestamp = Date.now();
+          const randomSuffix = Math.random().toString(36).substring(2, 6);
+          const newId = `item_${timestamp}_${randomSuffix}`;
+
+          // Add new item
+          userData.collected_items.push({
+            id: newId,
+            label_NO: det.label_NO,
+            label_TRANS: det.label_TRANS,
+            desc_NO: det.desc_NO,
+            desc_TRANS: det.desc_TRANS,
+            grammar_NO: det.label_grammar_no,
+            collected_at: new Date().toISOString(),
+            isFavorite: false,
+            level: level, // A1, A2, B1, B2
+            viewed: false, // Mark as not viewed initially
+            targetLang: targetLang, // Language code
+          });
+
+          newItemsCount++;
+          console.log(`✅ Added new item: ${det.label_NO} (${level})`);
+        } else {
+          console.log(`⏭️ Skipped duplicate: ${det.label_NO}`);
+        }
       }
 
-      // 3) resize
-      const r = await resizeToMaxSide(base, MAX_SIDE, JPEG_QUALITY);
+      // Award points (10 points per new item)
+      if (newItemsCount > 0) {
+        userData.points += newItemsCount * 10;
+        console.log(`💎 Awarded ${newItemsCount * 10} points! Total: ${userData.points}`);
+      }
 
-      // 4) vis freeze med loading
-      setPreviewUri(r.uri);
-      setImgW(r.w); setImgH(r.h);
-      setBoxes([]);
-      flash(); startProgress();
+      // Write back to file
+      await writeUserDataFile(userData);
 
-      // 5) kall OpenAI med timeout
-      const dets = await callOpenAIWithTimeout(r.b64, MODEL, 15000); // 15s cut
-      const px = detectionsToPixels(dets, r.w, r.h);
-      setBoxes(px);
-    } catch (e) {
-      console.warn("predict failed", e);
-    } finally {
-      stopProgress();
-      setBusy(false);
+      console.log(`✅ Saved! Added ${newItemsCount} new items`);
+      const collectedCount = Array.isArray(userData.collected_items)
+        ? userData.collected_items.length
+        : 0;
+      await setUserLeaderboardStats({
+        points: userData.points ?? 0,
+        streak: Math.max(1, Math.round(collectedCount / 2)),
+        weeklyDelta: Math.max(10, collectedCount * 6),
+      });
+      return { newItemsCount, pointsEarned: newItemsCount * 10 };
+    } catch (err) {
+      console.error("❌ Error saving items to user_data.json:", err);
+      return { newItemsCount: 0, pointsEarned: 0 };
     }
   };
 
-  const closePreview = () => { setPreviewUri(null); setBoxes([]); };
+  const awardTaskScorePoints = useCallback(async (score: number) => {
+    const normalized = Math.max(0, Math.round(Number(score) || 0));
+    if (normalized <= 0) {
+      return 0;
+    }
 
-  if (!permission) return <Center><Text>Ber om kameratilgang…</Text></Center>;
-  if (!permission.granted) {
+    try {
+      const userData = await readUserDataFile();
+      userData.points = (userData.points ?? 0) + normalized;
+      await writeUserDataFile(userData);
+      const collectedCount = Array.isArray(userData.collected_items)
+        ? userData.collected_items.length
+        : 0;
+      await setUserLeaderboardStats({
+        points: userData.points ?? normalized,
+        streak: Math.max(1, Math.round(collectedCount / 2)),
+        weeklyDelta: Math.max(10, collectedCount * 6),
+      });
+      console.log(`🏆 Awarded ${normalized} task points! Total: ${userData.points}`);
+      return normalized;
+    } catch (err) {
+      console.error("❌ Error awarding task points:", err);
+      return 0;
+    }
+  }, []);
+
+  /**
+   * Displays the unified toast overlay with the provided title/subtitle/icon.
+   */
+  const showNotificationToast = useCallback(({ title, subtitle = "", icon = "bell" }: NotificationPayload) => {
+    setNotificationData({ title, subtitle, icon });
+    setShowNotification(true);
+
+    // Slide down animation
+    notificationAnim.setValue(-100);
+    Animated.spring(notificationAnim, {
+      toValue: 60,
+      useNativeDriver: true,
+      tension: 50,
+      friction: 8,
+    }).start();
+
+    // Auto-hide after 3 seconds
+    setTimeout(() => {
+      Animated.timing(notificationAnim, {
+        toValue: -100,
+        duration: 300,
+        useNativeDriver: true,
+      }).start(() => {
+        setShowNotification(false);
+      });
+    }, 3000);
+  }, [notificationAnim]);
+
+  /**
+   * When grading finishes, award the user points and pop the delayed toast.
+   */
+  const handleTaskComplete = useCallback(async ({ score }: { score: number }) => {
+    const pointsAdded = await awardTaskScorePoints(score);
+    if (pointsAdded > 0) {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+      toastTimerRef.current = setTimeout(() => {
+        showNotificationToast({
+          title: "Task Complete!",
+          subtitle: `+${pointsAdded} Points (Score ${pointsAdded}/6)`,
+          icon: "tasks",
+        });
+        toastTimerRef.current = null;
+      }, 500);
+    }
+  }, [awardTaskScorePoints, showNotificationToast]);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  const notificationOverlay = (
+    <Modal
+      transparent
+      visible={showNotification}
+      animationType="none"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+    >
+      <View style={styles.notificationModalWrap} pointerEvents="box-none">
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.notificationToast,
+            { transform: [{ translateY: notificationAnim }] },
+          ]}
+        >
+          <View style={styles.notificationContent}>
+            <FontAwesome5 name={notificationData.icon ?? "bell"} size={20} color="#4ade80" />
+            <View style={styles.notificationText}>
+              <Text style={styles.notificationTitle}>{notificationData.title}</Text>
+              {!!notificationData.subtitle && (
+                <Text style={styles.notificationSubtitle}>{notificationData.subtitle}</Text>
+              )}
+            </View>
+          </View>
+        </Animated.View>
+      </View>
+    </Modal>
+  ) ; null;
+
+  // Flash
+  const flash = () => {
+    flashAnim.setValue(1);
+    Animated.timing(flashAnim, {
+      toValue: 0,
+      duration: 150,
+      useNativeDriver: true,
+    }).start(); //Fade out (duration 150ms)
+  };
+
+
+  // Loading bar animations
+  const startProgress = () => {
+    // Start loading bar animation
+    setLoading(true); // Set loading state to true
+    prog.setValue(0); // Reset progress to 0
+    Animated.loop(
+      // Loop the animation from here
+      Animated.sequence([
+        // Sequence of animations
+        Animated.timing(prog, {
+          toValue: 0.7,
+          duration: 900,
+          useNativeDriver: false,
+        }), // Animate from 0% to 70% in 900ms
+        Animated.timing(prog, {
+          toValue: 1.0,
+          duration: 500,
+          useNativeDriver: false,
+        }), // Animate from 70% to 100% in 500ms
+      ])
+    ).start(); // Start the animation loop
+  };
+  const stopProgress = () => {
+    // Stop loading bar animation
+    Animated.timing(prog, {
+      toValue: 1,
+      duration: 120,
+      useNativeDriver: false,
+    }).start(() => {
+      // Animate from current value to 100% in 120ms
+      setLoading(false); // Set loading state to false
+      prog.setValue(0); // Reset progress to 0
+    });
+  };
+
+  type TTSButtonProps = {
+    onPress: () => void;
+
+    // Show MaterialIcon?
+    showIcon?: boolean;
+    iconLibrary?: "MaterialIcons" | "FontAwesome5";
+    // MaterialIcon Name?
+    iconName?: keyof typeof MaterialIcons.glyphMap | string;
+    iconSize?: number;
+    iconColor?: string;
+
+    // Show Text Label? (ignored if passed children)
+    showText?: boolean;
+    text?: string;
+    textStyle?: StyleProp<TextStyle>;
+
+    // Optional Style for the outer Button
+    style?: StyleProp<ViewStyle>;
+
+    // Optional custom content; if provided ovverrides ShowIcon/Showtext
+    children?: React.ReactNode;
+  };
+
+  function TTSButton({
+    onPress,
+    showIcon = false,
+    iconLibrary = "MaterialIcons",
+    iconName = "multitrack-audio",
+    iconSize = 20,
+    iconColor = "#fff",
+    showText = false,
+    text = "",
+    textStyle,
+    style,
+    children,
+  }: TTSButtonProps) {
+    const scale = useRef(new Animated.Value(1)).current;
+
+    const onPressIn = () => {
+      Animated.spring(scale, {
+        toValue: 1.06, // Little Bigger
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 6,
+      }).start();
+    };
+
+    const onPressOut = () => {
+      Animated.spring(scale, {
+        toValue: 1,
+        useNativeDriver: true,
+        speed: 18,
+        bounciness: 6,
+      }).start();
+    };
     return (
-      <Center>
-        <Text style={{ color:"#fff", marginBottom:10 }}>Tilgang kreves for kamera</Text>
-        <Pressable style={styles.btn} onPress={requestPermission}><Text style={styles.btnTxt}>Tillat</Text></Pressable>
-      </Center>
+      <Animated.View style={{ transform: [{ scale }] }}>
+        <Pressable
+          onPressIn={onPressIn}
+          onPressOut={onPressOut}
+          onPress={onPress}
+          style={[
+            {
+
+            },
+            style,
+          ]}
+          >
+            {children ? (
+              children
+            ) : (
+              <>
+                {showIcon && (
+                  <>
+                    {iconLibrary === "FontAwesome5" ? (
+                      <FontAwesome5 name={iconName as any} size={iconSize} color={iconColor} />
+                    ) : (
+                      <MaterialIcons name={iconName as any} size={iconSize} color={iconColor} />
+                    )}
+                  </>
+                )}
+                {showText && !!text && (
+                  <Text style={[{ color: "#fff", fontWeight: "600" }, textStyle]}>{text}</Text>
+                )}
+              </>
+            )}
+          </Pressable>
+        </Animated.View>
+      );
+    }
+
+  const handleCapture = async () => {
+    console.log("Camera Capture Pressed");
+    if (!cameraRef.current || busy) return; // Return if camera is not ready or busy
+    try {
+      logWithTime("Started Handling Capture");
+      setBusy(true); // Set State to busy
+
+      // Wait for image to process without lagging
+      const photo = await cameraRef.current.takePictureAsync({
+        skipProcessing: true,
+        quality: CAMERA_QUALITY,
+        base64: true,
+      });
+      
+      // Resize Image
+      logWithTime("Resizing..");
+      const photo_resized = await resizeToMaxSide(
+        photo.uri,
+        MAX_SIDE,
+        CAMERA_QUALITY
+      );
+      logWithTime("Finished Resizing");
+      setPreviewUri(photo.uri!);
+      logWithTime("Preview Set");
+
+      // Flash Effect
+      flash();
+      startProgress(); // Start flash and loading bar
+
+      setAiSize({ w: photo_resized.width!, h: photo_resized.height! }); // Set AI image size for SVG
+
+      // Send to OpenAI for Object Detection
+      logWithTime("Started Object Detection");
+      try {
+        const label = getLanguageLabelByCode(targetLang);
+        const prompt = buildVisionPrompt(
+          photo_resized.width!,
+          photo_resized.height!,
+          label,
+          targetLevel
+        );
+        logWithTime("Prompt Built");
+        const aiText = await callOpenAIWithTimeout(
+          photo_resized.base64!,
+          prompt,
+          25000
+        );
+        logWithTime("OpenAI Response Received");
+        console.log("AI RAW:", aiText); // Debug: show raw AI output
+
+        // Parse AI Output and convert to pixel boxes
+        const parsed = JSON.parse(aiText);
+        const objs = Array.isArray(parsed?.objects) ? parsed.objects : [];
+
+        const px = objs
+          .map((o: any) => {
+            const bn = o?.box_norm || {};
+            const clamp = (v: number, a: number, b: number) =>
+              Math.min(Math.max(+v, a), b);
+            const xc = clamp(bn.xc, 0, 1),
+              yc = clamp(bn.yc, 0, 1),
+              w = clamp(bn.w, 0, 1),
+              h = clamp(bn.h, 0, 1);
+            const x1 = Math.max(
+              0,
+              Math.min(
+                Math.round((xc - w / 2) * photo_resized.width!),
+                photo_resized.width! - 1
+              )
+            );
+            const y1 = Math.max(
+              0,
+              Math.min(
+                Math.round((yc - h / 2) * photo_resized.height!),
+                photo_resized.height! - 1
+              )
+            );
+            const x2 = Math.max(
+              0,
+              Math.min(
+                Math.round((xc + w / 2) * photo_resized.width!),
+                photo_resized.width! - 1
+              )
+            );
+            const y2 = Math.max(
+              0,
+              Math.min(
+                Math.round((yc + h / 2) * photo_resized.height!),
+                photo_resized.height! - 1
+              )
+            );
+            const cx = Math.round((x1 + x2) / 2);
+            const cy = Math.round((y1 + y2) / 2);
+            return {
+              label_NO: String(o.label_NO || ""),
+              label_TRANS: String(o.label_TRANS || ""),
+              desc_NO: String(o.desc_NO || ""),
+              desc_TRANS: String(o.desc_TRANS || ""),
+              label_grammar_no: String(o.label_grammar_no || ""),
+              confidence: Number(o.confidence || 0),
+              x1,
+              y1,
+              x2,
+              y2,
+              cx,
+              cy,
+            };
+          })
+          .filter((d: any) => d.x2 > d.x1 && d.y2 > d.y1);
+
+        setDetections(px);
+        logWithTime(`DETECTIONS = ${px.length} objects detected`); // Log number of detections
+
+        // Save items to user_data.json (with duplicate prevention)
+        const saveResult = await saveItemsToUserData(px, targetLevel, targetLang);
+
+        // Show notification if items were added
+        if (saveResult.newItemsCount > 0) {
+          showNotificationToast({
+            title: `+${saveResult.newItemsCount} Item${saveResult.newItemsCount !== 1 ? "s" : ""} Added!`,
+            subtitle: `+${saveResult.pointsEarned} Points`,
+            icon: "box",
+          });
+        }
+
+        setModalOpen(true); // Open modal with vocabulary
+
+        logWithTime("Finished Object Detection");
+      } catch (err: any) {
+        console.error("Error during AI processing:", err);
+        setDetections([]); // Empty detections on error
+        stopProgress(); // Stop loading bar on error
+      }
+    } catch (err: any) {
+      console.error("Error during capture:", err);
+    } finally {
+      setBusy(false);
+      stopProgress(); // Stop loading bar
+      logWithTime("Finished Handling Capture");
+      startTimeRef.current = null; // Reset stopwatch
+    }
+  };
+
+  /* ----------  MAIN LOGIC  ---------- */
+
+  // 1. Before knowing the permission
+  if (!permission) {
+    // if not-permission
+    return (
+      <>
+        {notificationOverlay}
+        <Center>
+          <Text>{t(targetLang, "askCamPerm")}</Text>
+        </Center>
+      </>
     );
   }
 
-  // scale bokser til skjerm (contain)
-  const fit = fitContainScale({ srcW: imgW, srcH: imgH, dstW: SW, dstH: SH });
-  const scaled = boxes.map(b => ({
-    ...b,
-    x1: Math.round(b.x1 * fit.sx + fit.dx),
-    y1: Math.round(b.y1 * fit.sy + fit.dy),
-    x2: Math.round(b.x2 * fit.sx + fit.dx),
-    y2: Math.round(b.y2 * fit.sy + fit.dy),
-  }));
-
-  const barW = prog.interpolate({ inputRange: [0, 1], outputRange: [0, SW * 0.6] });
-
-  return (
-    <View style={styles.root}>
-      {/* fullskjerm kamera */}
-      <CameraView
-        ref={cameraRef}
-        style={[StyleSheet.absoluteFill, { transform: [{ scaleX: facing === "front" ? -1 : 1 }] }]}
-        facing={facing}
-      />
-
-      {/* frozen preview + overlay */}
-      {previewUri && (
+  // 2. No Camera Permission: Show "Ask for Permission" button
+  if (!permission.granted) {
+    return (
+      console.log("Return = Permission"),
+      (
         <>
-          <Image source={{ uri: previewUri }} resizeMode="contain" style={StyleSheet.absoluteFill} />
-          <Svg width={SW} height={SH} style={StyleSheet.absoluteFill}>
-            {scaled.map((b, i) => (
-              <Rect key={i} x={b.x1} y={b.y1}
-                width={Math.max(1, b.x2 - b.x1)} height={Math.max(1, b.y2 - b.y1)}
-                stroke="yellow" strokeWidth={3} fill="transparent"
-              />
-            ))}
-          </Svg>
-          {scaled.map((b, i) => (
-            <View key={`t${i}`} style={[styles.tag, { left: b.x1, top: Math.max(0, b.y1 - 24) }]}>
-              <Text style={styles.tagTxt}>{b.label} {(b.conf ?? 0).toFixed(2)}</Text>
-            </View>
-          ))}
+          {notificationOverlay}
+          <Center>
+            <Text style={{ marginBottom: 10 }}>We need access to camera</Text>
+            <Pressable style={styles.btn} onPress={requestPermission}>
+              <Text style={styles.btnTxt}>{t(targetLang, "giveAccess")}</Text>
+            </Pressable>
+          </Center>
+        </>
+      )
+    );
+  }
 
-          {/* loading overlay */}
+  // 3. If there exist a preview, show it. (runs after taking picture)
+  if (previewUri) {
+    return (
+      console.log("Return = Preview"),
+      (
+        <>
+          {notificationOverlay}
+          <View style={StyleSheet.absoluteFill}>
+          {/* Image Preview */}
+          <Image
+            source={{ uri: previewUri }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="contain"
+          />
+          <Text style={styles.imageOverlayText}>*Marker position may not be correct*</Text>
+          {/* Detection Bubbles (center of each detection box) */}
+          {aiSize && detections.length > 0 && (
+            <Svg
+              style={StyleSheet.absoluteFill}
+              viewBox={`0 0 ${aiSize.w} ${aiSize.h}`}
+            >
+              {detections.map((det, i) => {
+                const { w, h } = sizeBubble(det.label_NO); // Calculate bubble size based on label
+                const bx = det.cx - w / 2; // bubble x (centered)
+                const above = det.cy > h + BUBBLE.tip + 6; // place bubble above if enough space
+                const by = above
+                  ? det.cy - (h + BUBBLE.tip)
+                  : det.cy + BUBBLE.tip; // bubble y (above or below)
+                const tipPath = above
+                  ? `M ${det.cx - 10} ${by + h} L ${det.cx} ${det.cy} L ${
+                      det.cx + 10
+                    } ${by + h} Z`
+                  : `M ${det.cx - 10} ${by} L ${det.cx} ${det.cy} L ${
+                      det.cx + 10
+                    } ${by} Z`;
+
+                return (
+                  <AnimatedG
+                    key={i}
+                    onPress={() => handleMarkerPress(det, i)}
+                    onPressIn={() => bounceMarker(i)}
+                    scale={getMarkerScale(i) as any}
+                    originX={det.cx}
+                    originY={det.cy}
+                  >
+                    {/* debug rectangle around the object, comment in if needed */}
+                    {/* <Rect x={det.x1} y={det.y1} width={det.x2-det.x1} height={det.y2-det.y1} stroke="#ff0" strokeWidth={2} fill="transparent" /> */}
+
+                    {/* Bubble */}
+                    <Rect
+                      x={bx}
+                      y={by}
+                      width={w}
+                      height={h}
+                      rx={BUBBLE.radius}
+                      ry={BUBBLE.radius}
+                      fill="#fff"
+                      stroke={BUBBLE.stroke}
+                      strokeWidth={BUBBLE.strokeW}
+                    />
+                    {/* Tip */}
+                    <Path
+                      d={tipPath}
+                      fill="#fff"
+                      stroke={BUBBLE.stroke}
+                      strokeWidth={BUBBLE.strokeW}
+                    />
+                    {/* Text */}
+                    <SvgText
+                      x={det.cx}
+                      y={by + h / 2 + BUBBLE.font * 0.35}
+                      fontSize={BUBBLE.font}
+                      fontWeight="600"
+                      fill={BUBBLE.stroke}
+                      textAnchor="middle"
+                    >
+                      {det.label_NO.toUpperCase()}
+                    </SvgText>
+                  </AnimatedG>
+                );
+              })}
+            </Svg>
+          )}
+
+          {/* Close Button */}
+          <Pressable
+            style={styles.btnExitPreview}
+            onPress={() => {
+              setPreviewUri(null);
+              setDetections([]); // Empty Detection bubble
+              setModalOpen(false);
+            }}
+          >
+            <MaterialIcons name="close" size={32} color="#fff" />
+          </Pressable>
+
+          {/* flash */}
+          <Animated.View
+            pointerEvents="none"
+            style={[styles.flash, { opacity: flashAnim }]}
+          />
+
+          {/* Loading Bar */}
           {loading && (
             <View style={styles.loadingWrap}>
-              <Text style={styles.loadingTxt}>Analyserer…</Text>
-              <View style={styles.barBg}>
+              <Text style={styles.loadingTxt}>{t(targetLang, "processing")}</Text>
+              <View style={styles.loadingBarBg}>
                 <Animated.View style={[styles.barFill, { width: barW }]} />
               </View>
             </View>
           )}
+          {/* ========================== MODAL SHEET ========================== */}
+          <ModalSheet
+            // Controls whether the modal is open or not
+            open={modalOpen}
+            // Called whenever modal is dragged up or down
+            onChange={setModalOpen}
+            // How much of the modal is visible in its "peek" position (10%)
+            peekRatio={0.12}
+            // How far you must drag up before it snaps fully open (30%)
+            snapUpThreshold={0.3}
+            // How far you must drag down before it snaps closed (30%)
+            snapDownThreshold={0.3}
+            // Disable full close (modal always stays visible at least in peek state)
+            canClose={false}
+            onProgress={handleProgress}
+          >
+            {/* ==================== SCROLLABLE CONTENT AREA ==================== */}
+            <ScrollView
+              // Allow vertical scrolling when there are many detected items
+              style={{ flex: 1 }}
+              // Add internal padding to prevent content from sticking to edges
+              contentContainerStyle={{
+                paddingTop: 10,
+                paddingBottom: 300, // extra space at bottom so last card isn't cut off
+              }}
+              // Hide default iOS/Android scrollbar for a cleaner look
+              showsVerticalScrollIndicator={false}
+              scrollEnabled={canScroll}
+            >
+              {/* ==================== WRAPPER FOR DETECTION CARDS ==================== */}
+              <View style={styles.detectionsWrap}>
+                {/* Title shown at the top of the modal */}
+                <Text style={styles.title}>{t(targetLang, "itemsDetected")}</Text>
 
-          {/* lukk */}
-          <Pressable onPress={closePreview} style={styles.closeBtn}>
-            <Text style={styles.closeTxt}>✕</Text>
-          </Pressable>
+                {/* Map over all AI detections and render one card per object */}
+                {detections.map((det, i) => (
+                  <View key={i} style={styles.itemCard}>
+                    {/* ==================== MAIN ROW: WORDS + BUTTONS ==================== */}
+                    <View style={styles.itemRow}>
+                      {/* LEFT SIDE: detected object in Norwegian + translated word */}
+                      <View style={styles.itemTextWrap}>
+                        <Text style={styles.itemLabel}>
+                          {det.label_NO.charAt(0).toUpperCase() + det.label_NO.slice(1)}
+                        </Text>
+                        <Text style={styles.itemTranslation}>
+                          {det.label_TRANS.charAt(0).toUpperCase() + det.label_TRANS.slice(1)}
+                        </Text>
+                      </View>
+
+                      {/* RIGHT SIDE: action buttons for TTS and Task */}
+                      <View style={styles.buttonRow}>
+                        {/* Text-to-speech (plays the Norwegian label) */}
+                        <TTSButton
+                          onPress={() => speakTTS(det.label_NO, "no")}
+                          showIcon={true}
+                          iconName="multitrack-audio"
+                          style={styles.ttsButton}
+                        />
+                        {/* Task button  */}
+                        <TTSButton
+                          onPress={() => {
+                            setTaskItem(det);
+                            setTaskOpen(true);
+                          }}
+                          showIcon={true}
+                          iconLibrary="FontAwesome5"
+                          iconName="tasks"
+                          style={styles.ttsButton}
+                          />
+                      </View>
+                    </View>
+
+                    {/* ==================== FOOTER ROW: DESCRIPTIONS ==================== */}
+                    <View style={styles.descRow}>
+                      {/* Left chip: short Norwegian description of object position */}
+                      <View style={styles.descChip}>
+                        <TTSButton
+                          onPress={() => speakTTS(det.desc_NO, "no")}
+                          showText
+                          text={`🇳🇴 ${det.desc_NO}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
+                          textStyle={styles.descChipText}
+                        />
+                      </View>
+
+                      {/* Right chip: translated description in chosen target language */}
+                      <View style={styles.descChip}>
+                        <TTSButton
+                          onPress={() => speakTTS(det.desc_TRANS, "else")}
+                          showText
+                          text={`${flagFor(targetLang)} ${det.desc_TRANS}`}   // <-- bruk template string, ikke "… {det.desc_NO}"
+                          textStyle={styles.descChipText}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            </ScrollView>
+          </ModalSheet>
+          <TaskSheet
+            visible={taskOpen}
+            onClose={() => setTaskOpen(false)}
+            item={taskItem}
+            targetLang={targetLang}
+            level={targetLevel as "A1" | "A2" | "B1" | "B2"}
+            speak={(t, lang) => speakTTS(t, lang)}
+            onStartTask={(it, { level, lang }) => {
+              // TODO: start oppgaveflyt her
+              console.log("Start task for:", it.label_NO, level, lang);
+            }}
+            onTaskComplete={handleTaskComplete}
+          />
+          </View>
         </>
-      )}
+      )
+    );
+  }
 
-      {/* flip (bare i live) */}
-      {!previewUri && (
-        <Pressable onPress={onFlip} style={styles.flipBtn}>
-          <Text style={styles.flipTxt}>{facing === "front" ? "Front" : "Back"}</Text>
-        </Pressable>
-      )}
-
-      {/* snapshot */}
-      <Pressable style={[styles.snapBtn, busy && { opacity: 0.6 }]} onPress={takeAndPredict} disabled={busy}>
-        <View style={styles.snapInner} />
+  // 4. Given Camera Permission: Show live camera (back)
+  console.log("Returned = Screen  |  Language = ", targetLang, "  |  Level = ", targetLevel);
+  return (
+    <>
+      {notificationOverlay}
+      <View style={styles.root}>
+      <CameraView
+        ref={cameraRef}
+        style={StyleSheet.absoluteFill}
+        facing="back"
+        zoom={0.001}
+      />
+      {/* Language selectors + capture control */}
+      <ChangeLanguageButton
+        languages={LANGUAGES}
+        selected={targetLang}
+        onSelect={setTargetLang}
+      />
+      <ChangeDiffButton
+        levels={LEVELS}
+        selected_level={targetLevel}
+        onSelect={setTargetLevel}
+        targetLang={targetLang}
+      />
+      <Pressable
+        onPress={() => setItemDexOpen(true)}
+        style={styles.itemDexFab}
+        android_ripple={{ color: "#2a2a2a", radius: 28 }}
+      >
+        <Text style={styles.itemDexFabTxt}><Feather name="box" size={34} color="white" /></Text>
       </Pressable>
 
-      {/* flash */}
-      <Animated.View pointerEvents="none" style={[styles.flash, { opacity: flashAnim }]} />
+      <Pressable
+        onPress={() => setLeaderBoardOpen(true)}
+        style={styles.leaderBoardFab}
+        android_ripple={{ color: "#2a2a2a", radius: 28 }}
+      >
+        <Text style={styles.leaderBoardFabTxt}>
+          <FontAwesome5 name="medal" size={30} color="white" />
+        </Text>
+      </Pressable>
+
+      <CaptureButton onPress={handleCapture} />
+
+      {/* ItemDex Modal in separate file */}
+      <ItemDexModal
+        visible={itemDexOpen}
+        onClose={() => setItemDexOpen(false)}
+        speak={(text, lang) => speakTTS(text, lang)}
+      />
+      <LeaderBoardModal
+        visible={leaderBoardOpen}
+        onClose={() => setLeaderBoardOpen(false)}
+      />
+    </View>
+    </>
+  );
+}
+
+/* #######################################  SUB-COMPONENTS  ####################################### */
+
+// Function to center item in middle of phone screen
+function Center({ children }: { children: React.ReactNode }) {
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+      {children}
     </View>
   );
 }
 
-/* ---------- helpers ---------- */
+// SNAPSHOT BUTTON STYLE AND ANIMATION
+function CaptureButton({
+  onPress,
+  disabled = false,
+}: {
+  onPress: () => void;
+  disabled?: boolean;
+}) {
+  const scale = React.useRef(new Animated.Value(1)).current; // Used to scale the snapshot button
 
-async function resizeToMaxSide(photo, maxSide, quality) {
-  const meta = await ImageManipulator.manipulateAsync(photo.uri, [], { compress: 1, base64: false });
-  const W = meta.width, H = meta.height;
-  const s = Math.min(1, maxSide / Math.max(W, H));
-  if (s < 1) {
-    const out = await ImageManipulator.manipulateAsync(
-      photo.uri,
-      [{ resize: { width: Math.round(W * s), height: Math.round(H * s) } }],
-      { compress: quality, base64: true }
-    );
-    return { uri: out.uri, w: out.width, h: out.height, b64: out.base64 };
+  const pressIn = () => {
+    console.log("IN = Capture Button");
+    Animated.spring(scale, {
+      toValue: 0.9,
+      useNativeDriver: true,
+      speed: 18,
+      bounciness: 6,
+    }).start();
+  };
+  const pressOut = () => {
+    console.log("OUT = Capture Button");
+    Animated.spring(scale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 18,
+      bounciness: 6,
+    }).start();
+  };
+
+  return (
+    <Animated.View style={[styles.wrap, { transform: [{ scale }] }]}>
+      <View style={styles.outerRing}>
+        <View style={styles.innerRing}>
+          <Pressable
+            onPressIn={pressIn}
+            onPressOut={pressOut}
+            onPress={() => !disabled && onPress()}
+            android_ripple={{ color: "#ddd", radius: 44 }}
+            style={styles.center}
+          />
+        </View>
+      </View>
+    </Animated.View>
+  );
+}
+
+// ----- LANGUAGE SELECT DROPDOWN BUTTON -------
+function ChangeLanguageButton({
+  languages,
+  selected,
+  onSelect,
+}: {
+  languages: { label: string; code: string }[];
+  selected: string;
+  onSelect: (code: string) => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const current = languages.find((l) => l.code === selected) ?? languages[0];
+
+  return (
+    <View style={langStyles.wrap}>
+      {/* Hovedknappen */}
+      <Pressable style={langStyles.mainBtn} onPress={() => setOpen((o) => !o)}>
+        <Text style={langStyles.mainTxt}>{flagFor(current.code)}</Text>
+      </Pressable>
+
+      {/* Dropdown */}
+      {open && (
+        <>
+          {/* Press outside = close */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setOpen(false)} />
+            
+          <View style={langStyles.dropdown}>
+            <ScrollView
+              style={{ maxHeight: 260 }}
+              bounces={false}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
+              {languages.map((l) => (
+                <Pressable
+                  key={l.code}
+                  style={langStyles.item}
+                  onPress={() => {
+                    onSelect(l.code);
+                    setOpen(false);
+                  }}
+                >
+                  <Text style={langStyles.itemTxt}>
+                    {flagFor(l.code)} {l.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+
+// FUNCTION TO CHANGE DIFFICULTY
+function ChangeDiffButton ({
+  levels,
+  selected_level,
+  onSelect,
+  targetLang,
+}: {
+  levels: string[];
+  selected_level: string;
+  onSelect: (code: string) => void;
+  targetLang: string;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const current = levels.find((l) => l === selected_level) ?? levels[0];
+
+
+  return (
+    <View style={langStyles.wrapLevel}>
+      {/* Hovedknappen */}
+      <Pressable style={langStyles.mainBtn} onPress={() => setOpen((o) => !o)}>
+        <Text style={langStyles.mainTxt}>{current}</Text>
+      </Pressable>
+
+      {/* Dropdown */}
+      {open && (
+        <>
+          {/*Close when pressing outside*/}
+          <Pressable
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+            }}
+            onPress={() => setOpen(false)}
+          />
+          <View style={langStyles.dropdown}>
+            <Text style={{
+              color: "#fff",
+              marginLeft: 8,
+              marginRight: 8,
+              fontWeight: "800",
+              fontSize: 14,
+              letterSpacing: 0.5
+              
+              
+            }}>{t(targetLang, "languageLevels")}</Text>
+            {levels.map((l) => (
+              <Pressable
+              key={l}
+              style={langStyles.item}
+              onPress={() => {
+               onSelect(l);
+                setOpen(false);
+              }}
+              >
+                <Text style={langStyles.itemTxt}>
+                  {l}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </>
+      )}
+    </View>
+  );
+}
+
+
+// ASYNC FUNCTION TO RESIZE IMAGE FOR SENDING TO AI
+async function resizeToMaxSide(
+  photoUri: string,
+  maxSide: number,
+  quality: number
+) {
+  // Get image dimensions
+  const { width, height } = await ImageManipulator.manipulateAsync(
+    photoUri,
+    []
+  );
+  let resize = {};
+  if (width > height) {
+    resize = { width: maxSide };
+  } else {
+    resize = { height: maxSide };
   }
-  if (photo.base64) return { uri: photo.uri, w: W, h: H, b64: photo.base64 };
-  const out = await ImageManipulator.manipulateAsync(photo.uri, [], { compress: quality, base64: true });
-  return { uri: out.uri, w: W, h: H, b64: out.base64 };
+  // Resize and compress
+  const result = await ImageManipulator.manipulateAsync(
+    photoUri,
+    [{ resize }],
+    { compress: quality, base64: true }
+  );
+  return result;
 }
 
-async function callOpenAIWithTimeout(b64, model, ms) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try { return await callOpenAI(b64, model, ctrl.signal); }
-  finally { clearTimeout(t); }
+// Function to get the chosen language into prompt
+function getLanguageLabelByCode(code: string) {
+  const match = LANGUAGES.find((l) => l.code === code);
+  return match ? match.label : "English"; // English as fallback
 }
 
-async function callOpenAI(b64, model, signal) {
-  const key = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
-  if (!key) throw new Error("Mangler EXPO_PUBLIC_OPENAI_API_KEY");
+// Build prompt to request NORMALIZED boxes
+function buildVisionPrompt(imgW: number, imgH: number, label: string, level: string) {
+  return `
+Returner KUN gyldig JSON. Ingen forklaringer, ingen kodegjerder, ingen trailing-komma.
 
-const body = {
-  model,
-  temperature: 0, // mer deterministisk
-  max_output_tokens: 300,
-  input: [{
-    role: "user",
-    content: [
-      { type: "input_text", text: PROMPT },
-      { 
-        type: "input_image",
-        image_url: `data:image/jpeg;base64,${b64}`,
-        detail: "high" 
-      },
-    ],
-  }],
-};
+Oppdag maks 5 tydelig synlige, distinkte objekter i bildet og returner nøyaktig dette skjemaet:
+{
+  "objects": [
+    {
+      "label_NO": "…",
+      "label_TRANS": "…",
+      "desc_NO": "…",
+      "desc_TRANS": "…",
+      "label_grammar_no": "…",
+      "confidence": 0.95,
+      "box_norm": { "xc": 0.5000, "yc": 0.5000, "w": 0.3000, "h": 0.4000 }
+    }
+  ]
+}
 
-  const rsp = await fetch("https://api.openai.com/v1/responses", {
+Læringsnivå (CEFR): ${level} (A1, A2, B1, B2).
+
+Regler for nivåtilpasning:
+- A1: svært vanlige, enkle substantiv; beskrivelse 3–5 ord.
+- A2: litt mer spesifikke; enkle adjektiv ok; 6–7 ord.
+- B1: konkrete, spesifikke; sammensatte ord ok; enkel preposisjon.
+- B2: mest presise hverdagssubstantiv; foretrekk sammensatte; maks 8 ord.
+
+Regler for bokser:
+- Bildestørrelse: width=${imgW}, height=${imgH} piksler, men returner normalisert [0,1].
+- "xc","yc" = sentrum; "w","h" = bredde/høyde; 4 desimaler; clamp til [0,1].
+- Varier desimaler (unngå runde tall). Dekke objekt tett. Sortér etter "confidence" synkende.
+
+Regler for etiketter:
+- Spesifikke, konkrete substantiv (ikke “ting/objekt/produkt”).
+- "label_NO" på norsk, tilpasset ${level}. "label_TRANS" er samme ord på ${label}.
+- 1–2 ord. Unngå merkenavn uten klar identifikator.
+
+Regler for beskrivelser:
+- "desc_NO": én kort norsk frase (≤8 ord) om hva/hvor i DETTE bildet.
+- "desc_TRANS": samme frase på ${label} (≤8 ord).
+- Ingen komma/punktum. Kun små bokstaver.
+
+Regler for "label_grammar_no" (norsk bokmål):
+- VIKTIG: Bruk RIKTIG grammatisk kjønn (en/et). Dobbelsjekk kjønnet for hvert ord.
+- Rekkefølge: "ARTIKKEL SUBSTANTIV, bestemt form, flertall, flertall bestemt"
+- Format: "en sofa, sofaen, sofaer, sofaene" (IKKE "en, sofaen, sofaer, sofaene")
+- ALLTID inkluder substantivet i første form: "[artikkel] [ord]"
+- Bruk kun "en" eller "et" (ikke "ei").
+- Hvis flertall ubestemt ender på "ere" → flertall bestemt "erne".
+  Eksempel: en høyttaler, høyttaleren, høyttalere, høyttalerne
+- Ellers → flertall bestemt "ene".
+  Eksempel: en stol, stolen, stoler, stolene; en energidrikk, energidrikken, energidrikker, energidrikkene
+- Uregelmessige: en bok, boken, bøker, bøkene; et barn, barnet, barn, barna; en mann, mannen, menn, mennene
+- Common words MUST have correct gender:
+  * "en sofa" (NOT "et sofa")
+  * "en ladekabel" (NOT "et ladekabel")
+  * "et bord" (NOT "en bord")
+  * "en lampe" (NOT "et lampe")
+- Én linje, fire former separert med ", " (komma+mellomrom). Første form ALLTID med substantiv.
+
+Kun gyldig JSON. Ikke bruk kodegjerder. Ikke legg til tekst før/etter JSON.
+`.trim();
+}
+
+// Async funciton to be sure openai can recieve prompt
+async function callOpenAIWithTimeout(b64: string, prompt: string, ms: number) {
+  const control = new AbortController();
+  const timeout = setTimeout(() => control.abort(), ms);
+  try {
+    return await callOpenAI(b64, prompt, control.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Function to call OpenAI and get its output text
+async function callOpenAI(b64: string, prompt: string, signal?: AbortSignal) {
+  const apiKey = process.env.EXPO_PUBLIC_OPENAI_API_KEY;
+  if (!apiKey) throw new Error("Missing EXPO_PUBLIC_OPENAI_API_KEY");
+
+  const response = await fetch(OPENAI_URL, {
+    // Sends a HTTP request to OpenAI
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
-    body: JSON.stringify(body),
+    headers: {
+      Authorization: `Bearer ${apiKey}`, // Send API
+      "Content-Type": "application/json", // Tells OpenAI that we send a JSON
+    },
+    body: JSON.stringify({
+      model: MODEL, // Which model to use
+      input: [
+        // What we send to the model. (text prompt, image as b64)
+        {
+          role: "user",
+          content: [
+            { type: "input_text", text: prompt },
+            {
+              type: "input_image",
+              image_url: `data:image/jpeg;base64,${b64}`,
+              detail: "low",
+            },
+          ],
+        },
+      ],
+      temperature: 0,
+    }),
     signal,
   });
 
-  if (!rsp.ok) throw new Error(`OpenAI ${rsp.status}: ${await rsp.text()}`);
-  const json = await rsp.json();
-  const raw = getOutputText(json) || "";
-  return parseDetections(raw);
-}
-
-function getOutputText(rspJson) {
-  if (typeof rspJson.output_text === "string") return rspJson.output_text;
-  try {
-    const c = rspJson.output?.[0]?.content;
-    const p = Array.isArray(c) ? c.find(x => x.type === "output_text" || x.type === "text") : null;
-    return p?.text || p?.output_text || "";
-  } catch { return ""; }
-}
-
-function parseDetections(raw) {
-  let data = null;
-  try { data = JSON.parse(raw); }
-  catch {
-    const i = raw.indexOf("{"), j = raw.lastIndexOf("}");
-    if (i !== -1 && j !== -1) data = JSON.parse(raw.slice(i, j + 1));
+  // If error
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    throw new Error(`OpenAI error ${response.status}: ${errText}`);
   }
-  const arr = data?.detections || [];
-  return arr.map(d => {
-    const b = d.box_norm; if (!b) return null;
-    const clamp = (v,a,b)=>Math.min(Math.max(+v,a),b);
-    const xc = clamp(b.xc,0,1), yc = clamp(b.yc,0,1), w = clamp(b.w,0,1), h = clamp(b.h,0,1);
-    return { label: d.label_no ?? "objekt", conf: +d.confidence || 0, xc, yc, w, h };
-  }).filter(Boolean);
+
+  const data = await response.json(); // Converts from text to JSON
+  const textOut = getOutputText(data); // Extract the text field from openAi's output
+
+  return textOut; // OpenAI's formatted text answer
 }
 
-function detectionsToPixels(d, W, H) {
-  return d.map(o => {
-    const x1 = Math.max(0, Math.min(Math.round((o.xc - o.w/2)*W), W-1));
-    const y1 = Math.max(0, Math.min(Math.round((o.yc - o.h/2)*H), H-1));
-    const x2 = Math.max(0, Math.min(Math.round((o.xc + o.w/2)*W), W-1));
-    const y2 = Math.max(0, Math.min(Math.round((o.yc + o.h/2)*H), H-1));
-    return { x1, y1, x2, y2, label: o.label, conf: o.conf };
-  });
+// Function to extract the Output text from OpenAI
+function getOutputText(data: any): string {
+  // Find all content parts and merge them together
+  return (
+    data?.output
+      ?.flatMap((msg: any) => msg?.content ?? [])
+      ?.filter((p: any) => p?.type === "output_text")
+      ?.map((p: any) => p?.text ?? "")
+      ?.join("\n")
+      ?.trim() ?? ""
+  );
 }
 
-function fitContainScale({ srcW, srcH, dstW, dstH }) {
-  const s = Math.min(dstW/srcW, dstH/srcH);
-  const w = srcW * s, h = srcH * s;
-  return { sx: s, sy: s, dx: (dstW - w)/2, dy: (dstH - h)/2 };
+// Function to size text "bubble" based on text length
+function sizeBubble(label: string) {
+  const charW = Math.round(BUBBLE.font * 0.55);
+  const textW = label.length * charW;
+  const w = Math.min(
+    BUBBLE.maxW,
+    Math.max(BUBBLE.minW, textW + 2 * BUBBLE.padX)
+  );
+  const h = BUBBLE.font + 2 * BUBBLE.padY;
+  return { w, h };
 }
 
-/* ---------- styles ---------- */
+
+/* #######################################  STYLES  ####################################### */
+
+const BTN_SIZE = 78; // Total Size
+const BTN_RING_SIZE = 3; // White Ring Size
+const BTN_BLACK_SIZE = 4; // Black Ring Size
+const BTN_BORDER_RADIUS = 3; // Higher => More Squary
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: "#000" },
-  btn: { paddingHorizontal: 16, paddingVertical: 10, backgroundColor: "#2b6", borderRadius: 8 },
-  btnTxt: { color: "white", fontWeight: "700" },
-
-  snapBtn: {
-    position: "absolute", bottom: 36, alignSelf: "center",
-    width: 78, height: 78, borderRadius: 39, borderWidth: 4, borderColor: "#eee",
-    backgroundColor: "#111", alignItems: "center", justifyContent: "center",
+  btn: {
+    backgroundColor: "#2b6",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
   },
-  snapInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: "#e0e0e0" },
+  btnTxt: { color: "#fff", fontWeight: "700", fontSize: 20, fontFamily: "" },
 
-  flipBtn: {
-    position: "absolute", top: Platform.OS === "ios" ? 50 : 24, right: 16,
-    paddingHorizontal: 10, paddingVertical: 8, backgroundColor: "rgba(0,0,0,0.5)", borderRadius: 8,
-  },
-  flipTxt: { color: "#fff", fontWeight: "700" },
-
-  closeBtn: {
-    position: "absolute", top: Platform.OS === "ios" ? 50 : 24, left: 16,
-    width: 36, height: 36, borderRadius: 18, backgroundColor: "rgba(0,0,0,0.55)",
-    alignItems: "center", justifyContent: "center",
-  },
-  closeTxt: { color: "#fff", fontSize: 18, fontWeight: "800" },
-
+  // Flash Style
   flash: { ...StyleSheet.absoluteFillObject, backgroundColor: "white" },
 
-  tag: { position: "absolute", paddingHorizontal: 6, paddingVertical: 3, backgroundColor: "rgba(0,0,0,0.7)", borderRadius: 6 },
-  tagTxt: { color: "yellow", fontSize: 12, fontWeight: "700" },
+  // Snapshot Button Style
+  wrap: {
+    position: "absolute",
+    bottom: 36,
+    alignSelf: "center",
+  },
+  outerRing: {
+    width: BTN_SIZE,
+    height: BTN_SIZE,
+    borderRadius: BTN_SIZE / BTN_BORDER_RADIUS,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: BTN_RING_SIZE,
+  },
+  innerRing: {
+    flex: 1,
+    width: "100%",
+    height: "100%",
+    borderRadius:
+      (BTN_SIZE - BTN_BORDER_RADIUS * BTN_RING_SIZE) / BTN_BORDER_RADIUS,
+    backgroundColor: "#000",
+    padding: BTN_BLACK_SIZE,
+  },
+  center: {
+    flex: 1,
+    borderRadius:
+      (BTN_SIZE - BTN_BORDER_RADIUS * (BTN_RING_SIZE + BTN_BLACK_SIZE)) /
+      BTN_BORDER_RADIUS,
+    backgroundColor: "#fff",
+  },
 
+  // Exit Preview Button
+  btnExitPreview: {
+    justifyContent: "center",
+    alignItems: "center",
+    fontSize: 20,
+    marginTop: 50,
+    marginLeft: 20,
+    height: 50,
+    width: 50,
+    borderRadius: 30,
+    borderWidth: 2,
+    borderColor: "rgba(255,255,255,0.3)",
+    backgroundColor: "rgba(0, 0, 0, 0.27)", // 50% transparent green background
+  },
+  imageOverlayText: {
+    alignItems: "center",
+    justifyContent: "center",
+    position: "absolute",
+    top: 60,
+    textAlign: "center",
+    width: "100%",
+    color: "#000000ff",
+    fontSize: 12,
+    fontWeight: "400",
+    fontStyle: "italic",
+    opacity: 0.7,
+  },
+
+  // Loading Bar Styles
   loadingWrap: {
-    position: "absolute", left: 0, right: 0, bottom: 120,
-    alignItems: "center", justifyContent: "center",
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 120,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 999,
   },
-  loadingTxt: { color: "#fff", marginBottom: 8, fontWeight: "600" },
-  barBg: {
-    width: SW * 0.6, height: 8, borderRadius: 6,
-    backgroundColor: "rgba(255,255,255,0.2)", overflow: "hidden",
+  loadingTxt: {
+    color: "#fff",
+    marginBottom: 8,
+    fontWeight: "600",
+    fontSize: 16,
+    backgroundColor: "#000000ff",
+    borderRadius: 6,
+    padding: 10
   },
-  barFill: { height: 8, backgroundColor: "yellow" },
+  loadingBarBg: {
+    width: "70%",
+    height: 8,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    overflow: "hidden",
+  },
+  barFill: {
+    height: 8,
+    backgroundColor: "#3b82f6",
+  },
+
+  // Notification Toast Styles
+  notificationModalWrap: {
+    flex: 1,
+    justifyContent: "flex-start",
+  },
+  notificationToast: {
+    position: "absolute",
+    top: 0,
+    left: 20,
+    right: 20,
+    zIndex: 1000,
+    backgroundColor: "rgba(11,11,11,0.95)",
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: "rgba(74,222,128,0.3)",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 10,
+  },
+  notificationContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  notificationText: {
+    flex: 1,
+  },
+  notificationTitle: {
+    color: "#fff",
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 2,
+  },
+  notificationSubtitle: {
+    color: "#4ade80",
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  detectionsWrap: {
+    paddingBottom: 32,
+  },
+  title: {
+    color: "#fff",
+    fontWeight: "700",
+    fontSize: 18,
+    marginBottom: 16,
+    textAlign: "center",
+    letterSpacing: 0.5,
+  },
+  itemCard: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 12,
+  },
+  itemRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  itemTextWrap: {
+    flex: 1,
+    marginRight: 10,
+  },
+  itemLabel: {
+    color: "#fff",
+    fontSize: 15,
+    fontWeight: "600",
+  },
+  itemTranslation: {
+    color: "#bbb",
+    fontSize: 13,
+    marginTop: 2,
+  },
+  buttonRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  listenText: {
+    color: "#fff",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  descRow: {
+    marginTop: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  descChip: {
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    borderRadius: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+  },
+  descChipText: {
+    color: "#ddd",
+    fontSize: 12,
+    fontStyle: "italic",
+  },
+  ttsButton: {
+    backgroundColor: "#3b82f6",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: 40, // valgfritt
+    minHeight: 36,
+  },
+  btnContainer: {
+    borderRadius: 8,
+    overflow: "hidden",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+  },
+  blueBg: {
+    backgroundColor: "#3b82f6", // base blue
+    borderRadius: 8,
+  },
+  whiteBg: {
+    backgroundColor: "#fff", // base blue
+    borderRadius: 8,
+  },
+  itemDexFab: {
+    position: "absolute",
+    left: 85,
+    bottom: 45, // over capture-knappen
+    backgroundColor: "rgba(0,0,0,0.35)",
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)"
+  },
+
+  itemDexFabTxt: { color: "#fff", fontWeight: "700", letterSpacing: 0.3 },
+  leaderBoardFab: {
+    position: "absolute",
+    right: 85,
+    bottom: 45,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.15)"
+  },
+  leaderBoardFabTxt: { color: "#fff", fontWeight: "700", letterSpacing: 0.3 }
+  
+
 });
 
-function Center({ children }) {
-  return <View style={{ flex:1, backgroundColor:"#000", alignItems:"center", justifyContent:"center" }}>{children}</View>;
-}
+const langStyles = StyleSheet.create({
+  wrap: {
+    position: "absolute",
+    top: 60,
+    right: 20,
+    zIndex: 999,
+    alignItems: "flex-end",
+  },
+  mainBtn: {
+    backgroundColor: "rgba(0,0,0,0.55)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  mainTxt: { fontSize: 20, color: "#fff" },
+  dropdown: {
+    marginTop: 8,
+    backgroundColor: "rgba(0,0,0,0.75)",
+    borderRadius: 12,
+    paddingVertical: 6,
+    minWidth: 160,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.2)",
+  },
+  item: { paddingHorizontal: 12, paddingVertical: 10 },
+  itemTxt: { color: "#fff", fontSize: 16 },
+
+  // Level
+    wrapLevel: {
+    position: "relative",
+    top: 60,
+    right: 80,
+    zIndex: 999,
+    alignItems: "flex-end",
+  },
+});

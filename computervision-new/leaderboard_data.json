@@ -1,0 +1,14 @@
+{
+  "players": [
+    { "id": "maya", "name": "Maya", "points": 1980, "streak": 12, "weeklyDelta": 120 },
+    { "id": "leo", "name": "Leo", "points": 1845, "streak": 9, "weeklyDelta": 80 },
+    { "id": "nova", "name": "Nova", "points": 1710, "streak": 6, "weeklyDelta": 65 },
+    { "id": "you", "name": "You", "points": 760, "streak": 7, "weeklyDelta": 110 },
+    { "id": "jo", "name": "Jo", "points": 1490, "streak": 5, "weeklyDelta": 42 },
+    { "id": "amir", "name": "Amir", "points": 1355, "streak": 3, "weeklyDelta": 28 },
+    { "id": "eira", "name": "Eira", "points": 1290, "streak": 5, "weeklyDelta": 54 },
+    { "id": "kai", "name": "Kai", "points": 1180, "streak": 2, "weeklyDelta": 18 },
+    { "id": "sami", "name": "Sami", "points": 1105, "streak": 4, "weeklyDelta": 32 },
+    { "id": "liv", "name": "Liv", "points": 1030, "streak": 1, "weeklyDelta": 8 }
+  ]
+}
