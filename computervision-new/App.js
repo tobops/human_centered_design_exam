@@ -4,6 +4,7 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import * as ImageManipulator from "expo-image-manipulator";
 import Svg, { Rect } from "react-native-svg";
 
+
 const MODEL = "gpt-4o-mini";            // evt "o4-mini"
 const SNAP_MAX_SIDE = 640;              // samsvarer med Python-koden
 const JPEG_QUALITY = 0.8;               // 0–1 i RN
